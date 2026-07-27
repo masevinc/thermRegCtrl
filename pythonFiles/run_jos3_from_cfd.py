@@ -168,8 +168,10 @@ def run_jos3(segment_temps: pd.DataFrame) -> pd.DataFrame:
     history = model.dict_results()
     n_soak_rows = 2  # dict_results() includes the initial construction-time row and the soak-phase row first
     result = pd.DataFrame({"Time": target_t})
+    result["TskMean"] = history["TskMean"][n_soak_rows:]
     for seg in SECTIONS_JOS3:
         result[f"Tsk_{seg}"] = history[f"Tsk{seg}"][n_soak_rows:]
+        result[f"Tcr_{seg}"] = history[f"Tcr{seg}"][n_soak_rows:]
     return result
 
 

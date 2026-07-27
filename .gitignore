@@ -1,0 +1,8 @@
+# Local CFD/thesis data and script outputs -- kept out of version control
+# (potentially confidential test data; scripts default to reading these
+# from an external --data-root, not from inside the repo)
+/sim-results/
+/jos3_results/
+/dummy_measurements/
+__pycache__/
+*.pyc

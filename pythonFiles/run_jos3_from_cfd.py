@@ -172,6 +172,7 @@ def run_jos3(segment_temps: pd.DataFrame) -> pd.DataFrame:
     for seg in SECTIONS_JOS3:
         result[f"Tsk_{seg}"] = history[f"Tsk{seg}"][n_soak_rows:]
         result[f"Tcr_{seg}"] = history[f"Tcr{seg}"][n_soak_rows:]
+        result[f"To_{seg}"] = history[f"To{seg}"][n_soak_rows:]  # operative temperature (environmental, not physiological)
     return result
 
 

@@ -27,8 +27,12 @@ sensor in the CFD export):
   - Convective/evaporative heat transfer coefficients (JOS-3's internal
     _hc/_rt) are left at their physiological defaults, NOT overridden from
     CFD heat flux -- this CFD run only exports temperature, no heat flux.
-  - Clothing insulation per segment follows the same ambient-temperature
-    based profile as CoSim.py's clothingReq().
+  - Clothing insulation: Icl = 0 (nude) for all segments. The physical
+    manikin this is validated against (see equ_comfort_from_test.py,
+    plot_comfort_summary.py) wears no clothing, and the CFD run's own
+    airflow field is solved around that bare geometry -- so a clothed
+    JOS-3 body would be inconsistent with both the CFD boundary
+    conditions and the real measurement it's compared against.
   - Three JOS-3 segments have no directly corresponding CFD sensor and
     reuse the nearest available region as a proxy: Back <- Thorax/chest,
     Pelvis <- average of both thighs, L/RArm (forearm) <- same-side
@@ -83,25 +87,6 @@ SEGMENT_MAP: dict[str, str | list[str]] = {
 SECTIONS_JOS3 = list(SEGMENT_MAP.keys())  # must match jos3.matrix.BODY_NAMES order
 
 
-def clothing_req(ambient_temp_c: float) -> list[float]:
-    """Same cold/warm-weather clothing profile as CoSim.py's clothingReq(),
-    ordered to match SECTIONS_JOS3 / BODY_NAMES directly."""
-    if ambient_temp_c <= -20:
-        head, shirt, pant, shoe, hand = 0.0, 1.5, 1.5, 0.2, 0.2
-    elif -20 < ambient_temp_c <= -10:
-        head, shirt, pant, shoe, hand = 0.0, 1.3, 1.3, 0.15, 0.15
-    elif -10 < ambient_temp_c <= 0:
-        head, shirt, pant, shoe, hand = 0.0, 0.9, 0.9, 0.1, 0.1
-    elif ambient_temp_c > 30:
-        head, shirt, pant, shoe, hand = 0.0, 0.25, 0.25, 0.05, 0.0
-    else:
-        head, shirt, pant, shoe, hand = 0.0, 0.47, 0.4, 0.08, 0.0
-    return [
-        head, shirt, shirt, shirt, shirt * 0.2 + pant, shirt, shirt, hand,
-        shirt, shirt, hand, pant, pant, shoe, pant, pant, shoe,
-    ]
-
-
 def find_sim_file(data_root: str, case: str) -> str:
     candidates = glob.glob(os.path.join(data_root, "sim-results", case, f"*{case}*.csv"))
     if not candidates:
@@ -146,7 +131,7 @@ def run_jos3(segment_temps: pd.DataFrame) -> pd.DataFrame:
     model.PAR = 1.0  # metabolic activity level [met], seated/resting
 
     t0 = segment_temps.iloc[0][SECTIONS_JOS3].to_numpy(dtype=float)
-    model.Icl = clothing_req(float(np.mean(t0)))
+    model.Icl = [0.0] * len(SECTIONS_JOS3)  # nude, matching the bare test manikin (see module docstring)
     model.Va = AMBIENT_VA
     model.RH = AMBIENT_RH
     model.Ta = t0

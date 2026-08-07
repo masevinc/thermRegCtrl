@@ -19,11 +19,28 @@ same CFD sensor export used by compare_dummy_vs_sim.py. Not included in this
 repo (kept out of version control, see README below); point --data-root at
 wherever that data lives locally.
 
+Optional velocity input: sim-results/<case>/*velocity*<case>*.csv, long
+format with columns time_min, sensor_id, sensor_label, velocity_ms (16
+sensors x N timestamps -- doesn't need to be dense; values are linearly
+interpolated onto the temperature time grid and held constant beyond the
+last available timestamp). When present, this replaces the constant-Va
+assumption below with real per-segment, per-timestep air velocity. Sensors
+are matched to JOS-3 segments by sensor_label (anatomical name), NOT by
+sensor_id -- a real case (coarse_min7) turned up sensor_id/sensor_label
+pairs that don't agree with the temperature export's own Sensor_NN
+numbering (e.g. id 07 = "shoulder_right" here but Sensor_07 = SHOULDER_left
+in the temperature file), so id-based matching would silently pair the
+wrong physical points. See VELOCITY_SEGMENT_MAP. When no velocity file is
+found for a case, falls back to the constant AMBIENT_VA below (this is
+still the case for min7/min0/pls7 as of 2026-08-07).
+
 Assumptions (documented here because none of these have a corresponding
 sensor in the CFD export):
   - Relative humidity: constant 50% for all segments and all time steps.
   - Radiant temperature: assumed equal to air temperature (Tr = Ta).
-  - Air velocity: constant 0.15 m/s (typical low cabin mixing velocity).
+  - Air velocity: constant 0.15 m/s (typical low cabin mixing velocity),
+    UNLESS a velocity file is found for the case (see above), in which
+    case real per-segment/per-timestep velocity is used instead.
   - Convective/evaporative heat transfer coefficients (JOS-3's internal
     _hc/_rt) are left at their physiological defaults, NOT overridden from
     CFD heat flux -- this CFD run only exports temperature, no heat flux.
@@ -36,11 +53,15 @@ sensor in the CFD export):
   - Three JOS-3 segments have no directly corresponding CFD sensor and
     reuse the nearest available region as a proxy: Back <- Thorax/chest,
     Pelvis <- average of both thighs, L/RArm (forearm) <- same-side
-    shoulder/upper-arm sensor.
+    shoulder/upper-arm sensor. The velocity mapping mirrors the same
+    proxy choices, except Neck, where the velocity export happens to
+    have a genuine neck sensor (head_neck) instead of reusing the
+    upper-back proxy used for temperature.
 
 Usage:
     python3 run_jos3_from_cfd.py --case min7
     python3 run_jos3_from_cfd.py --case min7 --data-root /path/to/master_thesis_input_data
+    python3 run_jos3_from_cfd.py --case coarse_min7   # picks up velocity file automatically
 """
 
 from __future__ import annotations
@@ -86,14 +107,53 @@ SEGMENT_MAP: dict[str, str | list[str]] = {
 }
 SECTIONS_JOS3 = list(SEGMENT_MAP.keys())  # must match jos3.matrix.BODY_NAMES order
 
+# JOS-3 segment <- velocity CSV sensor_label fragment(s). Matched by label,
+# not by sensor_id -- see module docstring for why. Mirrors SEGMENT_MAP's
+# proxy choices, except Neck (real head_neck sensor available here).
+VELOCITY_SEGMENT_MAP: dict[str, str | list[str]] = {
+    "Head":      "head_top",
+    "Neck":      "head_neck",                       # real sensor, unlike the temp proxy
+    "Chest":     "core_chest",
+    "Back":      "core_chest",                       # proxy: no dedicated back sensor
+    "Pelvis":    ["upperLeg_left", "upperLeg_right"],  # proxy: avg of thighs
+    "LShoulder": "shoulder_left",
+    "LArm":      "shoulder_left",                    # proxy: no dedicated forearm sensor
+    "LHand":     "hand_left",
+    "RShoulder": "shoulder_right",
+    "RArm":      "shoulder_right",                   # proxy: no dedicated forearm sensor
+    "RHand":     "hand_right",
+    "LThigh":    "upperLeg_left",
+    "LLeg":      "lowerLeg_left",
+    "LFoot":     "foot_left",
+    "RThigh":    "upperLeg_right",
+    "RLeg":      "lowerLeg_right",
+    "RFoot":     "foot_right",
+}
+
 
 def find_sim_file(data_root: str, case: str) -> str:
-    candidates = glob.glob(os.path.join(data_root, "sim-results", case, f"*{case}*.csv"))
+    case_dir = os.path.join(data_root, "sim-results", case)
+    candidates = [
+        p for p in glob.glob(os.path.join(case_dir, f"*{case}*.csv"))
+        if "velocity" not in os.path.basename(p).lower()
+    ]
     if not candidates:
-        raise FileNotFoundError(
-            f"No CFD sensor CSV found for case '{case}' under "
-            f"{os.path.join(data_root, 'sim-results', case)}/"
-        )
+        raise FileNotFoundError(f"No CFD sensor CSV found for case '{case}' under {case_dir}/")
+
+    def version_key(path: str) -> tuple[int, str]:
+        match = re.search(r"_v(\d+)", os.path.basename(path))
+        return (int(match.group(1)) if match else -1, path)
+
+    return max(candidates, key=version_key)
+
+
+def find_velocity_file(data_root: str, case: str) -> str | None:
+    """Optional -- returns None (not an error) when no velocity export
+    exists for this case yet, so older cases keep using constant AMBIENT_VA."""
+    case_dir = os.path.join(data_root, "sim-results", case)
+    candidates = glob.glob(os.path.join(case_dir, f"*velocity*{case}*.csv"))
+    if not candidates:
+        return None
 
     def version_key(path: str) -> tuple[int, str]:
         match = re.search(r"_v(\d+)", os.path.basename(path))
@@ -125,29 +185,64 @@ def build_segment_temps(cfd: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def run_jos3(segment_temps: pd.DataFrame) -> pd.DataFrame:
+def load_velocity(path: str) -> pd.DataFrame:
+    """Long format: time_min, sensor_id, sensor_label, velocity_ms."""
+    df = pd.read_csv(path)
+    df["Time"] = df["time_min"] * 60.0  # seconds, to match the temperature CSV's Time column
+    return df
+
+
+def build_segment_velocities(vel: pd.DataFrame) -> pd.DataFrame:
+    """Returns Time + one velocity column per JOS-3 segment (sparse -- one
+    row per timestamp actually present in the velocity export; interpolation
+    onto the simulation's own time grid happens later in run_jos3)."""
+    times = sorted(vel["Time"].unique())
+    out = pd.DataFrame({"Time": times})
+    for segment, fragment in VELOCITY_SEGMENT_MAP.items():
+        fragments = [fragment] if isinstance(fragment, str) else fragment
+        rows = vel[vel["sensor_label"].isin(fragments)]
+        if rows.empty:
+            raise KeyError(f"Velocity CSV has no sensor_label matching '{fragments}'")
+        out[segment] = rows.groupby("Time")["velocity_ms"].mean().reindex(times).to_numpy()
+    return out
+
+
+def run_jos3(segment_temps: pd.DataFrame, segment_velocities: pd.DataFrame | None = None) -> pd.DataFrame:
     model = jos3.JOS3(height=1.8, weight=75, age=30, ex_output="all")
     model.posture = "sitting"
     model.PAR = 1.0  # metabolic activity level [met], seated/resting
-
-    t0 = segment_temps.iloc[0][SECTIONS_JOS3].to_numpy(dtype=float)
-    model.Icl = [0.0] * len(SECTIONS_JOS3)  # nude, matching the bare test manikin (see module docstring)
-    model.Va = AMBIENT_VA
-    model.RH = AMBIENT_RH
-    model.Ta = t0
-    model.Tr = t0
-    model.simulate(1, SOAK_MINUTES * 60)  # initial soak so the body isn't at an arbitrary start state
 
     target_t = np.arange(0, segment_temps["Time"].iloc[-1] + COUPLING_DT, COUPLING_DT)
     interp_temps = {
         seg: np.interp(target_t, segment_temps["Time"], segment_temps[seg])
         for seg in SECTIONS_JOS3
     }
+    if segment_velocities is not None:
+        # np.interp holds the first/last known value constant outside the
+        # velocity export's own time range (e.g. beyond its last timestamp),
+        # which is exactly the desired fallback -- see module docstring.
+        interp_va = {
+            seg: np.interp(target_t, segment_velocities["Time"], segment_velocities[seg])
+            for seg in SECTIONS_JOS3
+        }
+        va0 = np.array([interp_va[seg][0] for seg in SECTIONS_JOS3])
+    else:
+        interp_va = None
+        va0 = np.full(len(SECTIONS_JOS3), AMBIENT_VA)
+
+    t0 = segment_temps.iloc[0][SECTIONS_JOS3].to_numpy(dtype=float)
+    model.Icl = [0.0] * len(SECTIONS_JOS3)  # nude, matching the bare test manikin (see module docstring)
+    model.Va = va0
+    model.RH = AMBIENT_RH
+    model.Ta = t0
+    model.Tr = t0
+    model.simulate(1, SOAK_MINUTES * 60)  # initial soak so the body isn't at an arbitrary start state
 
     for i in range(len(target_t)):
         ta = np.array([interp_temps[seg][i] for seg in SECTIONS_JOS3])
         model.Ta = ta
         model.Tr = ta  # assumption: no separate radiant sensor available, Tr = Ta
+        model.Va = np.array([interp_va[seg][i] for seg in SECTIONS_JOS3]) if interp_va is not None else va0
         model.simulate(1, COUPLING_DT)
 
     history = model.dict_results()
@@ -173,7 +268,15 @@ def main():
     cfd = load_cfd(sim_path)
     segment_temps = build_segment_temps(cfd)
 
-    result = run_jos3(segment_temps)
+    vel_path = find_velocity_file(args.data_root, args.case)
+    segment_velocities = None
+    if vel_path:
+        print(f"[{args.case}] Velocity input: {vel_path} (overrides constant AMBIENT_VA={AMBIENT_VA})")
+        segment_velocities = build_segment_velocities(load_velocity(vel_path))
+    else:
+        print(f"[{args.case}] No velocity file found, using constant AMBIENT_VA={AMBIENT_VA} m/s")
+
+    result = run_jos3(segment_temps, segment_velocities)
 
     out_dir = os.path.join(args.data_root, "jos3_results", args.case)
     os.makedirs(out_dir, exist_ok=True)

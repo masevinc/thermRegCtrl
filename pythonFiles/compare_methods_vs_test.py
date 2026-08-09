@@ -48,11 +48,14 @@ DEFAULT_CASES = [
     "high_instep_min7",
     "low_instep_min7",
     "kwsst_min7",
+    "first_order_min7",
+    "second_order_min7",
 ]
 
 METHOD_COLORS = [
     "tab:red", "tab:green", "tab:purple", "tab:orange",
     "tab:brown", "tab:pink", "tab:olive", "tab:cyan",
+    "tab:blue", "gold",
 ]
 
 

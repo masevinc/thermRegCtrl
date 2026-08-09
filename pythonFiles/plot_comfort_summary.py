@@ -9,8 +9,13 @@ repo's pipeline output:
 
 Run after run_jos3_from_cfd.py and jos3_comfort_from_cfd.py.
 
+For CFD-only variants with no test rig run of their own (e.g. a
+mesh-sensitivity case), pass --real-case to compare against a different
+case's real dummy_measurements data (see equ_comfort_from_test.py).
+
 Usage:
     python3 plot_comfort_summary.py --case min7 --season winter
+    python3 plot_comfort_summary.py --case coarse_min7 --real-case min7 --season winter
 """
 
 from __future__ import annotations
@@ -57,9 +62,13 @@ def test_profile_at(dummy: pd.DataFrame, elapsed_s: float, window_s: float = 10.
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--case", default="min7")
+    parser.add_argument("--real-case", default=None,
+                         help="Dummy-measurement case to compare against, if different from --case. "
+                              "Defaults to --case.")
     parser.add_argument("--season", default="winter", choices=["summer", "winter"])
     parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
     args = parser.parse_args()
+    real_case = args.real_case or args.case
 
     case_dir = os.path.join(args.data_root, "jos3_results", args.case)
     jos3_path = os.path.join(case_dir, f"jos3_prediction_{args.case}.csv")
@@ -70,10 +79,12 @@ def main():
 
     jos3_df = pd.read_csv(jos3_path)
     sensation_df = pd.read_csv(sensation_path)
-    dummy = load_dummy(find_dummy_file(args.data_root, args.case))
+    dummy = load_dummy(find_dummy_file(args.data_root, real_case))
 
     out_dir = os.path.join(case_dir, "summary_plots")
     os.makedirs(out_dir, exist_ok=True)
+    tag = args.case if real_case == args.case else f"{args.case}_vs_real-{real_case}"
+    title_case = args.case if real_case == args.case else f"{args.case} (vs. real test {real_case})"
 
     # 1) PPD vs DTS: highlight a few points along the transient
     t_end = sensation_df["time"].iloc[-1]
@@ -83,22 +94,23 @@ def main():
         idx = (sensation_df["time"] - t).abs().idxmin()
         highlight[label] = sensation_df["overallSensation"].iloc[idx]
     plot_ppd_curve(
-        os.path.join(out_dir, f"ppd_dts_{args.case}.png"),
+        os.path.join(out_dir, f"ppd_dts_{tag}.png"),
         highlight=highlight,
-        title=f"Case {args.case}: JOS-3-driven overall sensation (DTS) vs. predicted dissatisfaction (PPD)",
+        title=f"Case {title_case}: JOS-3-driven overall sensation (DTS) vs. predicted dissatisfaction (PPD)",
     )
 
     # 2) Body-segment equivalent-temperature profile: JOS-3 (To) vs. real test (EQU), at the end of the transient
     jos3_profile = jos3_profile_at(jos3_df, t_end)
     test_profile = test_profile_at(dummy, t_end)
+    real_label = "Real test EQU" if real_case == args.case else f"Real test EQU ({real_case})"
     plot_segment_profile(
         {
             f"JOS-3 predicted (t={int(t_end / 60)} min)": jos3_profile,
-            f"Real test EQU (t={int(t_end / 60)} min)": test_profile,
+            f"{real_label} (t={int(t_end / 60)} min)": test_profile,
         },
         season=args.season,
-        out_path=os.path.join(out_dir, f"segment_profile_{args.case}.png"),
-        title=f"Case {args.case} ({args.season}): body-segment equivalent temperature vs. ISO 14505-2 zones",
+        out_path=os.path.join(out_dir, f"segment_profile_{tag}.png"),
+        title=f"Case {title_case} ({args.season}): body-segment equivalent temperature vs. ISO 14505-2 zones",
     )
 
     print(f"[{args.case}] summary plots written to -> {out_dir}")

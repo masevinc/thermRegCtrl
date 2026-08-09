@@ -16,6 +16,13 @@ Run, in order:
     jos3_comfort_from_cfd.py --case <case>
     equ_comfort_from_test.py --case <case> --season winter
 
+For CFD-only variants that don't have their own physical test rig run (e.g.
+a mesh-sensitivity case like coarse_min7, meant to represent the same
+ambient scenario as an existing case), pass --real-case to point at the
+real dummy_measurements file to compare against while still reading/writing
+this case's own JOS-3 results:
+    python3 equ_comfort_from_test.py --case coarse_min7 --real-case min7 --season winter
+
 Usage:
     python3 equ_comfort_from_test.py --case min7 --season winter
 """
@@ -120,14 +127,20 @@ def resample_to(series_df: pd.DataFrame, value_col: str, target_t: np.ndarray) -
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--case", default="min7", help="Case name, e.g. min7, min0, pls7")
+    parser.add_argument("--real-case", default=None,
+                         help="Dummy-measurement case to compare against, if different from --case "
+                              "(e.g. a mesh-sensitivity CFD variant with no test rig run of its own). "
+                              "Defaults to --case.")
     parser.add_argument("--season", default="winter", choices=list(BANDS_BY_SEASON.keys()),
                          help="Which ISO 14505-2 comfort chart to classify against")
     parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
     args = parser.parse_args()
+    real_case = args.real_case or args.case
 
-    dummy_path = find_dummy_file(args.data_root, args.case)
+    dummy_path = find_dummy_file(args.data_root, real_case)
     sensation_path, comfort_path = find_jos3_comfort_files(args.data_root, args.case)
-    print(f"[{args.case}] dummy EQU:      {dummy_path}")
+    print(f"[{args.case}] dummy EQU:      {dummy_path}"
+          + (f"  (real-case override: {real_case})" if real_case != args.case else ""))
     print(f"[{args.case}] JOS-3 sensation: {sensation_path}")
     print(f"[{args.case}] JOS-3 comfort:   {comfort_path}")
 
@@ -144,30 +157,33 @@ def main():
 
     out_dir = os.path.join(args.data_root, "jos3_results", args.case, "vs_test_comfort")
     os.makedirs(out_dir, exist_ok=True)
+    tag = args.case if real_case == args.case else f"{args.case}_vs_real-{real_case}"
 
-    zones.to_csv(os.path.join(out_dir, f"equ_iso14505_zones_{args.case}_{args.season}.csv"), index=False)
+    zones.to_csv(os.path.join(out_dir, f"equ_iso14505_zones_{tag}_{args.season}.csv"), index=False)
     pd.DataFrame({
         "elapsed_s": target_t,
         "equ_overall_zone": zones["overall_zone"],
         "equ_overall_on_sensation_scale": equ_scale,
         "jos3_overall_sensation": jos3_sensation_r,
         "jos3_overall_comfort": jos3_comfort_r,
-    }).to_csv(os.path.join(out_dir, f"comparison_{args.case}_{args.season}.csv"), index=False)
+    }).to_csv(os.path.join(out_dir, f"comparison_{tag}_{args.season}.csv"), index=False)
 
     fig, ax = plt.subplots(figsize=(9, 5))
-    ax.plot(target_t / 60, equ_scale, label="Real test (EQU -> ISO 14505-2 zone, whole body)", color="tab:orange")
+    real_label = "Real test" if real_case == args.case else f"Real test ({real_case})"
+    ax.plot(target_t / 60, equ_scale, label=f"{real_label} (EQU -> ISO 14505-2 zone, whole body)", color="tab:orange")
     ax.plot(target_t / 60, jos3_sensation_r, label="JOS-3 overall sensation (Berkeley model)", color="tab:red", alpha=0.8)
     ax.plot(target_t / 60, jos3_comfort_r, label="JOS-3 overall comfort (Berkeley model)", color="tab:blue", alpha=0.8)
     ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
     ax.set_xlabel("Time (min)")
     ax.set_ylabel("-4 (cold/uncomfortable) .. 0 (neutral) .. +4 (hot/uncomfortable)")
+    title_case = args.case if real_case == args.case else f"{args.case} (vs. real test {real_case})"
     ax.set_title(
-        f"Case {args.case} ({args.season}): real-test ISO 14505-2 comfort zone vs. JOS-3-predicted comfort"
+        f"Case {title_case} ({args.season}): real-test ISO 14505-2 comfort zone vs. JOS-3-predicted comfort"
     )
     ax.legend()
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    fig.savefig(os.path.join(out_dir, f"comparison_{args.case}_{args.season}.png"), dpi=150)
+    fig.savefig(os.path.join(out_dir, f"comparison_{tag}_{args.season}.png"), dpi=150)
     plt.close(fig)
 
     print(f"[{args.case}] ISO 14505-2 zone classification and JOS-3 comparison written to -> {out_dir}")

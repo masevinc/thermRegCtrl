@@ -1,9 +1,9 @@
 // extract_wall_yplus.java
 //
 // STAR-CCM+ macro: mesh-quality check -- reads Wall Y+ (area-average and
-// max) on every boundary belonging to the manikin's own skin (name
-// contains "dummy_fs", case-insensitive) in the currently loaded
-// simulation, and writes one CSV row per boundary.
+// max) on the boundary/boundaries belonging to the manikin's own skin
+// (name contains "dummy" but not "sensor", case-insensitive -- see below)
+// in the currently loaded simulation, and writes one CSV row per boundary.
 //
 // Companion to extract_temp_csv.java / run_export_temp_csv.sh, same
 // batch-per-sim-file pattern (getActiveSimulation(), not opening extra
@@ -23,6 +23,22 @@
 // and "plus" instead of failing silently, so FIELD_FUNCTION_NAME can be
 // fixed quickly. Same fallback behavior if BOUNDARY_NAME_FILTER matches
 // nothing -- prints every boundary name it actually saw.
+//
+// Boundary naming (confirmed 2026-08-09 via a real batch-run's diagnostic
+// output on case_debug_0804): the manikin's own skin is a SINGLE boundary,
+// "Air.Dummy" -- NOT split per body region in this mesh (unlike the
+// "DUMMY_FS_<region>" names seen in a different, older case report). The
+// same sim also has 16 "...Sensor_XX_<region>.Sensor" boundaries -- these
+// are the offset air-probe surfaces used for temperature/velocity
+// monitors elsewhere in this pipeline, not solid walls, so Wall Y+ on them
+// isn't meaningful -- excluded explicitly below (they also contain
+// "dummy" in their full path name, so a plain substring match would wrongly
+// grab them too). Net effect: this macro reports ONE whole-manikin Y+
+// number per case (area-avg + max), not per-body-region -- good enough to
+// answer "did this mesh achieve the target Y+ at all", but if per-region
+// breakdown is needed later, "Air.Dummy" would need to be split into 16
+// derived parts (e.g. Threshold-by-distance from each sensor point, same
+// approach as the sensor-area-average velocity macro elsewhere in this repo).
 
 import java.io.File;
 import java.io.FileWriter;
@@ -36,7 +52,13 @@ import star.base.report.MaxReport;
 
 public class extract_wall_yplus extends StarMacro {
 
-  private static final String BOUNDARY_NAME_FILTER = "dummy_fs"; // case-insensitive substring match
+  // Case-insensitive substring match on the boundary's presentation name.
+  // Matches "Air.Dummy" (the manikin's own solid skin, what we want) while
+  // excluding the 16 "...Sensor_XX_<region>.Sensor" offset-probe boundaries
+  // (also contain "dummy" in their full path, but aren't solid walls) --
+  // see the class-level comment above for how this was confirmed.
+  private static final String BOUNDARY_NAME_FILTER = "dummy";
+  private static final String BOUNDARY_NAME_EXCLUDE = "sensor";
   private static final String FIELD_FUNCTION_NAME = "WallYplus";
 
   public void execute() {
@@ -66,7 +88,8 @@ public class extract_wall_yplus extends StarMacro {
     for (Region region : sim.getRegionManager().getRegions()) {
       for (Boundary b : region.getBoundaryManager().getBoundaries()) {
         allBoundaryNames.add(region.getPresentationName() + "." + b.getPresentationName());
-        if (b.getPresentationName().toLowerCase().contains(BOUNDARY_NAME_FILTER)) {
+        String bNameLower = b.getPresentationName().toLowerCase();
+        if (bNameLower.contains(BOUNDARY_NAME_FILTER) && !bNameLower.contains(BOUNDARY_NAME_EXCLUDE)) {
           matched.add(b);
         }
       }

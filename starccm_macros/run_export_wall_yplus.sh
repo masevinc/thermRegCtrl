@@ -12,10 +12,12 @@
 # special-casing needed here, they'll pick up automatically once that
 # checkpoint exists and this script is re-run.
 #
-# Adjust BASE_DIR below -- this is a guess based on run_export_temp_csv.sh's
-# BASE_DIR (which pointed at a "case_debug_0804" subfolder specifically);
-# verify it matches where coarse_full_0805/, fine_full_0805/, etc. actually
-# live before running (`ls "$BASE_DIR"` should list them directly).
+# BASE_DIR matches run_export_temp_csv.sh's own BASE_DIR exactly (confirmed
+# 2026-08-09 via a directory listing screenshot: full_1st_ord/, full_2nd_ord/,
+# full_cleaned_0804/, half_cleaned_0804/, fine_full_0805/, full_deltaT_0p5/,
+# full_2nd_ord_30deg_tilted/, extract_temp_csv.java, run_export_temp_csv.sh,
+# csv_exports/, logs/ all live directly under case_debug_0804/, not one level
+# up under StarCCM_Test/ -- an earlier version of this script guessed wrong).
 #
 # Same caveat as run_export_temp_csv.sh: the starccm+ launch line below is
 # a minimal placeholder -- license server, -power, -np, module load, etc.
@@ -23,7 +25,7 @@
 
 set -euo pipefail
 
-BASE_DIR="/dss/lxclscratch/08/go34zaw2/StarCCM_Test"
+BASE_DIR="/dss/lxclscratch/08/go34zaw2/StarCCM_Test/case_debug_0804"
 SIM_NAME="save_stage3a_5min.sim"
 MACRO="$(cd "$(dirname "$0")" && pwd)/extract_wall_yplus.java"
 OUT_DIR="${BASE_DIR}/yplus_exports"

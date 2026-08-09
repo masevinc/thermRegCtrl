@@ -108,21 +108,23 @@ public class extract_wall_yplus extends StarMacro {
     }
   }
 
+  // Note: these reports are intentionally left in the ReportManager rather
+  // than deleted -- Report has no destroy() method on this STAR-CCM+
+  // version (20.06.010), and cleanup isn't needed anyway: each .sim file is
+  // processed by its own `starccm+ -batch` invocation, which exits right
+  // after this macro finishes, discarding everything.
+
   private double areaAverage(Simulation sim, FieldFunction ff, Boundary b) {
     AreaAverageReport rep = sim.getReportManager().createReport(AreaAverageReport.class);
     rep.setFieldFunction(ff);
     rep.getParts().setObjects(b);
-    double value = rep.getReportMonitorValue();
-    rep.destroy();
-    return value;
+    return rep.getReportMonitorValue();
   }
 
   private double maxValue(Simulation sim, FieldFunction ff, Boundary b) {
     MaxReport rep = sim.getReportManager().createReport(MaxReport.class);
     rep.setFieldFunction(ff);
     rep.getParts().setObjects(b);
-    double value = rep.getReportMonitorValue();
-    rep.destroy();
-    return value;
+    return rep.getReportMonitorValue();
   }
 }

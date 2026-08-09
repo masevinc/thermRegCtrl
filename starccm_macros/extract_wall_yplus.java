@@ -1,9 +1,15 @@
 // extract_wall_yplus.java
 //
 // STAR-CCM+ macro: mesh-quality check -- reads Wall Y+ (area-average and
-// max) on the boundary/boundaries belonging to the manikin's own skin
-// (name contains "dummy" but not "sensor", case-insensitive -- see below)
-// in the currently loaded simulation, and writes one CSV row per boundary.
+// max) on EVERY boundary in the currently loaded simulation (except the
+// 16 offset air-probe "...Sensor_XX_<region>.Sensor" surfaces, which are
+// not solid walls and would just add zero/meaningless rows -- see below),
+// and writes one CSV row per boundary. Boundaries that aren't actual
+// no-slip walls (inlets, outlets, symmetry planes, internal solid/solid
+// interfaces, etc.) will simply come out with Y+ near/at 0 -- this macro
+// does not try to guess/filter by boundary *type*, it reports everything
+// and lets the numbers speak for themselves, since Alperen wants to see
+// values on all surfaces where Y+ actually forms, not just the manikin.
 //
 // Companion to extract_temp_csv.java / run_export_temp_csv.sh, same
 // batch-per-sim-file pattern (getActiveSimulation(), not opening extra
@@ -21,24 +27,14 @@
 // standard macro name for "Wall Y+"). If that's wrong for this version/
 // setup, this macro prints every field function whose name contains "y"
 // and "plus" instead of failing silently, so FIELD_FUNCTION_NAME can be
-// fixed quickly. Same fallback behavior if BOUNDARY_NAME_FILTER matches
-// nothing -- prints every boundary name it actually saw.
+// fixed quickly.
 //
-// Boundary naming (confirmed 2026-08-09 via a real batch-run's diagnostic
-// output on case_debug_0804): the manikin's own skin is a SINGLE boundary,
-// "Air.Dummy" -- NOT split per body region in this mesh (unlike the
-// "DUMMY_FS_<region>" names seen in a different, older case report). The
-// same sim also has 16 "...Sensor_XX_<region>.Sensor" boundaries -- these
-// are the offset air-probe surfaces used for temperature/velocity
-// monitors elsewhere in this pipeline, not solid walls, so Wall Y+ on them
-// isn't meaningful -- excluded explicitly below (they also contain
-// "dummy" in their full path name, so a plain substring match would wrongly
-// grab them too). Net effect: this macro reports ONE whole-manikin Y+
-// number per case (area-avg + max), not per-body-region -- good enough to
-// answer "did this mesh achieve the target Y+ at all", but if per-region
-// breakdown is needed later, "Air.Dummy" would need to be split into 16
-// derived parts (e.g. Threshold-by-distance from each sensor point, same
-// approach as the sensor-area-average velocity macro elsewhere in this repo).
+// Per-boundary computation is wrapped in try/catch: a handful of
+// boundaries (confirmed 2026-08-09 on case_debug_0804: internal solid/
+// solid interfaces like "Solid.internal-1", and possibly inlet/outlet/
+// symmetry types) may not support this field function at all and throw
+// rather than just returning 0 -- those are logged as "ERROR" in the CSV
+// (not silently dropped, and not allowed to kill the whole batch run).
 
 import java.io.File;
 import java.io.FileWriter;
@@ -52,12 +48,8 @@ import star.base.report.MaxReport;
 
 public class extract_wall_yplus extends StarMacro {
 
-  // Case-insensitive substring match on the boundary's presentation name.
-  // Matches "Air.Dummy" (the manikin's own solid skin, what we want) while
-  // excluding the 16 "...Sensor_XX_<region>.Sensor" offset-probe boundaries
-  // (also contain "dummy" in their full path, but aren't solid walls) --
-  // see the class-level comment above for how this was confirmed.
-  private static final String BOUNDARY_NAME_FILTER = "dummy";
+  // Only real exclusion: the 16 offset air-probe boundaries (not solid
+  // walls -- see class-level comment). Everything else is reported.
   private static final String BOUNDARY_NAME_EXCLUDE = "sensor";
   private static final String FIELD_FUNCTION_NAME = "WallYplus";
 
@@ -84,22 +76,17 @@ public class extract_wall_yplus extends StarMacro {
     }
 
     List<Boundary> matched = new ArrayList<Boundary>();
-    List<String> allBoundaryNames = new ArrayList<String>();
     for (Region region : sim.getRegionManager().getRegions()) {
       for (Boundary b : region.getBoundaryManager().getBoundaries()) {
-        allBoundaryNames.add(region.getPresentationName() + "." + b.getPresentationName());
         String bNameLower = b.getPresentationName().toLowerCase();
-        if (bNameLower.contains(BOUNDARY_NAME_FILTER) && !bNameLower.contains(BOUNDARY_NAME_EXCLUDE)) {
+        if (!bNameLower.contains(BOUNDARY_NAME_EXCLUDE)) {
           matched.add(b);
         }
       }
     }
 
     if (matched.isEmpty()) {
-      sim.println("ERROR: no boundary matched filter '" + BOUNDARY_NAME_FILTER + "'. All boundaries in this sim:");
-      for (String n : allBoundaryNames) {
-        sim.println("    " + n);
-      }
+      sim.println("ERROR: no boundaries found at all (unexpected).");
       return;
     }
 
@@ -117,23 +104,31 @@ public class extract_wall_yplus extends StarMacro {
 
     try {
       PrintWriter out = new PrintWriter(new FileWriter(outFile));
-      out.println("boundary,area_avg_yplus,max_yplus");
+      out.println("region,boundary,area_avg_yplus,max_yplus");
       for (Boundary b : matched) {
-        double avg = areaAverage(sim, yplusFF, b);
-        double max = maxValue(sim, yplusFF, b);
-        out.println(b.getPresentationName() + "," + avg + "," + max);
-        sim.println(b.getPresentationName() + "  avg Y+=" + avg + "  max Y+=" + max);
+        String regionName = b.getRegion().getPresentationName();
+        String row;
+        try {
+          double avg = areaAverage(sim, yplusFF, b);
+          double max = maxValue(sim, yplusFF, b);
+          row = regionName + "," + b.getPresentationName() + "," + avg + "," + max;
+          sim.println(regionName + "." + b.getPresentationName() + "  avg Y+=" + avg + "  max Y+=" + max);
+        } catch (Exception e) {
+          row = regionName + "," + b.getPresentationName() + ",ERROR,ERROR";
+          sim.println(regionName + "." + b.getPresentationName() + "  ERROR: " + e.getMessage());
+        }
+        out.println(row);
       }
       out.close();
-      sim.println("Exported Wall Y+ data to: " + outPath);
+      sim.println("Exported Wall Y+ data (" + matched.size() + " boundaries) to: " + outPath);
     } catch (Exception e) {
       sim.println("Failed to write CSV: " + e.getMessage());
     }
   }
 
-  // Note: these reports are intentionally left in the ReportManager rather
-  // than deleted -- Report has no destroy() method on this STAR-CCM+
-  // version (20.06.010), and cleanup isn't needed anyway: each .sim file is
+  // Note: reports are intentionally left in the ReportManager rather than
+  // deleted -- Report has no destroy() method on this STAR-CCM+ version
+  // (20.06.010), and cleanup isn't needed anyway: each .sim file is
   // processed by its own `starccm+ -batch` invocation, which exits right
   // after this macro finishes, discarding everything.
 

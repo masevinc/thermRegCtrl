@@ -8,7 +8,13 @@ directly whether the methods that matched the real test better also had
 better (or worse!) near-wall mesh resolution.
 
 Expects one CSV per case at <data-root>/yplus_exports/<case>_yplus.csv,
-columns: boundary,area_avg_yplus,max_yplus (see extract_wall_yplus.java).
+columns: region,boundary,area_avg_yplus,max_yplus (see
+extract_wall_yplus.java). Covers every boundary in the sim except the 16
+offset air-probe surfaces (not solid walls) -- non-wall boundaries (inlets,
+outlets, symmetry planes, ...) will simply show Y+ near/at 0, and a few
+boundary types that don't support the field function at all (e.g. internal
+solid/solid interfaces) come through as the literal string "ERROR" in
+those two columns, coerced to NaN here rather than crashing the load.
 
 Usage:
     python3 summarize_wall_yplus.py
@@ -38,6 +44,8 @@ def load_all(data_root: str) -> pd.DataFrame:
     for path in paths:
         case = os.path.basename(path).removesuffix("_yplus.csv")
         df = pd.read_csv(path)
+        for col in ("area_avg_yplus", "max_yplus"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")  # "ERROR" rows -> NaN
         df.insert(0, "case", case)
         rows.append(df)
     return pd.concat(rows, ignore_index=True)
@@ -60,6 +68,7 @@ def main():
         worst_area_avg_yplus=("area_avg_yplus", "max"),
         overall_max_yplus=("max_yplus", "max"),
         n_boundaries=("boundary", "count"),
+        n_errors=("area_avg_yplus", lambda s: s.isna().sum()),
     ).sort_values("overall_max_yplus")
 
     if args.real_case:

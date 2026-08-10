@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # run_export_wall_yplus.sh
 #
-# Scans BASE_DIR for save_stage3a_5min.sim files (the 5-min checkpoint each
-# case-setup macro saves), and for each one found runs STAR-CCM+ in batch
-# mode with extract_wall_yplus.java to export Wall Y+ (area-average + max)
-# per manikin-skin boundary to a CSV named after the case folder. All CSVs
-# land in a single yplus_exports/ folder.
+# Scans BASE_DIR (or just one case folder under it, see below) for
+# save_stage3a_5min.sim files (the 5-min checkpoint each case-setup macro
+# saves), and for each one found runs STAR-CCM+ in batch mode with
+# extract_wall_yplus.java to export Wall Y+ (area-average + max) on every
+# boundary to a CSV named after the case folder. All CSVs land in a single
+# yplus_exports/ folder.
+#
+# Usage:
+#   ./run_export_wall_yplus.sh                  # all cases under BASE_DIR
+#   ./run_export_wall_yplus.sh full_1st_ord      # just this one case folder
 #
 # Cases with no save_stage3a_5min.sim yet (e.g. full_2nd_ord_30deg_tilted,
 # not started as of 2026-08-09) are silently skipped by `find` -- no
@@ -30,9 +35,21 @@ SIM_NAME="save_stage3a_5min.sim"
 MACRO="$(cd "$(dirname "$0")" && pwd)/extract_wall_yplus.java"
 OUT_DIR="${BASE_DIR}/yplus_exports"
 
+# Optional: restrict to a single case folder, e.g. ./run_export_wall_yplus.sh full_1st_ord
+CASE_NAME="${1:-}"
+if [ -n "$CASE_NAME" ]; then
+  SEARCH_DIR="${BASE_DIR}/${CASE_NAME}"
+  if [ ! -d "$SEARCH_DIR" ]; then
+    echo "ERROR: no such case folder: $SEARCH_DIR" >&2
+    exit 1
+  fi
+else
+  SEARCH_DIR="$BASE_DIR"
+fi
+
 mkdir -p "$OUT_DIR"
 
-find "$BASE_DIR" -type f -name "$SIM_NAME" -print0 | while IFS= read -r -d '' simfile; do
+find "$SEARCH_DIR" -type f -name "$SIM_NAME" -print0 | while IFS= read -r -d '' simfile; do
   case_dir="$(dirname "$simfile")"
   case_name="$(basename "$case_dir")"
   out_csv="${OUT_DIR}/${case_name}_yplus.csv"
@@ -46,5 +63,9 @@ find "$BASE_DIR" -type f -name "$SIM_NAME" -print0 | while IFS= read -r -d '' si
   # on this cluster and are not guessed here.
   STARCCM_YPLUS_CSV_OUT="$out_csv" starccm+ -batch "$MACRO" "$simfile"
 done
+
+if [ -n "$CASE_NAME" ] && [ -z "$(find "$SEARCH_DIR" -type f -name "$SIM_NAME")" ]; then
+  echo "No $SIM_NAME found under $SEARCH_DIR -- nothing to process."
+fi
 
 echo "Done. CSV files are in: $OUT_DIR"

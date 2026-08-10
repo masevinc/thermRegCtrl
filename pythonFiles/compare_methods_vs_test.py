@@ -50,12 +50,13 @@ DEFAULT_CASES = [
     "kwsst_min7",
     "first_order_min7",
     "second_order_min7",
+    "tilted_30deg_min7",
 ]
 
 METHOD_COLORS = [
     "tab:red", "tab:green", "tab:purple", "tab:orange",
     "tab:brown", "tab:pink", "tab:olive", "tab:cyan",
-    "tab:blue", "gold",
+    "tab:blue", "gold", "tab:gray", "indigo",
 ]
 
 

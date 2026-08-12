@@ -210,6 +210,26 @@ def region_list_25zone(sim: pd.DataFrame) -> list[tuple[str, list[int], str | No
     return result
 
 
+def sim_25zone_to_legacy_regions(sim25: pd.DataFrame) -> pd.DataFrame:
+    """Collapses a 25-zone-format sim (Time + z01..z25 columns) down to
+    REGION_MAP's 16 grouped regions, by averaging the same zones
+    REGION_MAP itself groups on the real-test side. Output columns are
+    named after REGION_MAP's own sim_col_key fragments, so this can drop
+    straight into any legacy-format consumer unchanged (see
+    compare_methods_vs_test.py, which uses this to let a 25-zone case sit
+    on the same 16-region overlay grid as the older cases -- at the cost
+    of re-introducing the averaging the 25-zone format was added to
+    avoid; prefer compare_dummy_vs_sim.py's native 25-zone path directly
+    when you don't specifically need a cross-case overlay)."""
+    out = pd.DataFrame({"Time": sim25["Time"]})
+    for _, zones, sim_col_key in REGION_MAP:
+        cols = [c for c in sim25.columns if any(c.startswith(f"z{z:02d}_") for z in zones)]
+        if not cols:
+            continue
+        out[sim_col_key] = sim25[cols].mean(axis=1)
+    return out
+
+
 def region_series(dummy: pd.DataFrame, zones: list[int], value_kind: str) -> pd.Series:
     cols = [f"Sensor_{z}_{value_kind}" for z in zones]
     return dummy[cols].mean(axis=1)

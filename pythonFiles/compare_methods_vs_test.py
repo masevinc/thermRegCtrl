@@ -28,19 +28,25 @@ import pandas as pd
 from compare_dummy_vs_sim import (
     DEFAULT_DATA_ROOT,
     REGION_MAP,
+    detect_sim_format,
     find_dummy_file,
     find_sim_file,
     load_dummy,
+    load_sim_25zone,
     load_sim_legacy,
     region_series,
     resample_sim,
+    sim_25zone_to_legacy_regions,
 )
 
-# This script only supports the legacy 16-region format (REGION_MAP) --
-# all cases in DEFAULT_CASES below predate the newer 25-zone 1:1 sensor
-# layout (see compare_dummy_vs_sim.py's module docstring). Overlaying a
-# 25-zone case here wouldn't line up against REGION_MAP's 16 regions
-# anyway; use compare_dummy_vs_sim.py directly for those.
+# Every case is plotted on REGION_MAP's 16 regions. Legacy-format cases
+# (see compare_dummy_vs_sim.py) already have exactly that shape. 25-zone
+# cases get collapsed down to the same 16 regions via
+# sim_25zone_to_legacy_regions -- re-introduces the averaging the 25-zone
+# format was added to avoid, but is the only way to put a 25-zone case on
+# the same grid as the older ones for a direct overlay/ranking. Use
+# compare_dummy_vs_sim.py directly instead if you want the full-resolution
+# 25-zone-native comparison for a single case.
 
 # Default sensitivity-study cases for the -7C ambient scenario (min7), one
 # per CFD method/mesh variant -- see thermRegCtrl memory notes for what each
@@ -57,6 +63,7 @@ DEFAULT_CASES = [
     "first_order_min7",
     "second_order_min7",
     "tilted_30deg_min7",
+    "tilted_30deg_v4_min7",
 ]
 
 METHOD_COLORS = [
@@ -90,8 +97,13 @@ def main():
         if sim_path is None:
             print(f"[!] no sim result found for case '{case}', skipping it")
             continue
-        sims[case] = load_sim_legacy(sim_path)
-        print(f"[{case}] sim: {sim_path}")
+        fmt = detect_sim_format(sim_path)
+        sims[case] = (
+            sim_25zone_to_legacy_regions(load_sim_25zone(sim_path))
+            if fmt == "25zone"
+            else load_sim_legacy(sim_path)
+        )
+        print(f"[{case}] sim: {sim_path} (format: {fmt})")
     if not sims:
         raise FileNotFoundError("No sim result files found for any of the requested cases")
 

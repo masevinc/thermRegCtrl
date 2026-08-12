@@ -31,10 +31,16 @@ from compare_dummy_vs_sim import (
     find_dummy_file,
     find_sim_file,
     load_dummy,
-    load_sim,
+    load_sim_legacy,
     region_series,
     resample_sim,
 )
+
+# This script only supports the legacy 16-region format (REGION_MAP) --
+# all cases in DEFAULT_CASES below predate the newer 25-zone 1:1 sensor
+# layout (see compare_dummy_vs_sim.py's module docstring). Overlaying a
+# 25-zone case here wouldn't line up against REGION_MAP's 16 regions
+# anyway; use compare_dummy_vs_sim.py directly for those.
 
 # Default sensitivity-study cases for the -7C ambient scenario (min7), one
 # per CFD method/mesh variant -- see thermRegCtrl memory notes for what each
@@ -84,7 +90,7 @@ def main():
         if sim_path is None:
             print(f"[!] no sim result found for case '{case}', skipping it")
             continue
-        sims[case] = load_sim(sim_path)
+        sims[case] = load_sim_legacy(sim_path)
         print(f"[{case}] sim: {sim_path}")
     if not sims:
         raise FileNotFoundError("No sim result files found for any of the requested cases")

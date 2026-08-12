@@ -13,16 +13,25 @@ conventions as run_jos3_from_cfd.py / equ_comfort_from_test.py.
 
 Dummy measurement files contain 25 raw zone sensors (Sensor_<1..25>_EQU / _AIR).
 The zone numbers correspond to the 1..25 zone numbering shown in the
-"3D Comfort - Sensor definition" body diagram. The test rig's own software
-("individual setting" table) groups these 25 raw zones into 16 logical
-regions (some regions are the average of multiple zones, e.g.
-Thorax = zones 6, 7, 8, 9).
+"3D Comfort - Sensor definition" body diagram.
 
-The sim result file (sim-results/<case>/*_v<N>.csv) contains 16 monitor
-points that correspond 1:1 to these 16 logical regions, but under different
-names (e.g. sim "CORE_chest" <-> test region "Thorax"). If several
-iterations (v3, v4, ...) exist for a case, the script always picks the file
-with the highest v<N> suffix (the most recent iteration).
+Two CFD sensor export formats are supported, auto-detected per file
+(see detect_sim_format):
+  - "legacy16": the original 16-sensor export (one shared "Time" column,
+    positional UPPERCASE names like "Sensor_06_CORE_chest"). These don't
+    correspond 1:1 to the real test rig's 25 zones -- the test rig's own
+    software ("individual setting" table) groups its 25 raw zones into 16
+    logical regions to match (some are averages of multiple zones, e.g.
+    Thorax = zones 6, 7, 8, 9), see REGION_MAP.
+  - "25zone": the newer export (added 2026-08-12, sensor positions updated
+    to match the real test rig's own probe layout exactly), 25 sensors
+    each with their own "Physical Time (s)" column (verified identical
+    across sensors), names already matching the test rig's zone numbering
+    1:1 (e.g. "Sensor_14_left_hand" <-> real test zone 14) -- no grouping/
+    averaging needed, see load_sim_25zone/region_list_25zone.
+
+If several iterations (v1, v2, ...) exist for a case, the script always
+picks the file with the highest v<N> suffix (the most recent iteration).
 
 For each region, the script:
   - computes the test-side average of the mapped zones (T_air) at every
@@ -89,6 +98,12 @@ REGION_MAP = [
     ("Right foot",        [25],         "Sensor_16_LOWERBODY_rightFoot"),
 ]
 
+# 25zone-format column parser: raw header before the ":" split looks like
+# "Sensor_01_head_scalp Monitor" or, for a couple of sensors, "Sensor_03_
+# head_left 2 Monitor" (STAR-CCM+ appended " 2" to dedupe a monitor name
+# clash) -- the (?:\s+\d+)? optionally eats that suffix.
+NEW_FORMAT_COL_RE = re.compile(r"Sensor_(\d+)_([A-Za-z_]+)(?:\s+\d+)?\s+Monitor", re.IGNORECASE)
+
 
 def find_dummy_file(data_root: str, case: str) -> str | None:
     matches = sorted(glob.glob(os.path.join(data_root, "dummy_measurements", f"*{case}*.csv")))
@@ -131,10 +146,68 @@ def load_dummy(path: str, value_kind: str) -> pd.DataFrame:
     return df
 
 
-def load_sim(path: str) -> pd.DataFrame:
+def detect_sim_format(path: str) -> str:
+    """Peeks at the CSV header only (nrows=0, cheap even on multi-MB
+    files). Returns '25zone' or 'legacy16' -- see module docstring."""
+    header = pd.read_csv(path, nrows=0).columns
+    return "25zone" if any("Physical Time" in c for c in header) else "legacy16"
+
+
+def load_sim_legacy(path: str) -> pd.DataFrame:
+    """Older 16-sensor CFD export: one shared 'Time' column."""
     df = pd.read_csv(path)
     df.columns = [c.split(":")[0].replace("Temperatur - ", "").strip() for c in df.columns]
     return df
+
+
+def load_sim_25zone(path: str) -> pd.DataFrame:
+    """Newer 25-sensor CFD export. Each sensor has its own 'Physical Time
+    (s)' column -- verified identical across all 25 on the first real
+    export of this format (2026-08-12), so the first one found is used as
+    the shared time axis; if a future export ever has per-sensor timing
+    drift this would silently use only the first sensor's clock, worth
+    re-checking if that's ever suspected. Output columns are named
+    'z<NN>_<label>', zone number matching the real test rig's
+    Sensor_<NN>_AIR/EQU numbering directly (see region_list_25zone)."""
+    raw = pd.read_csv(path)
+    time_col = next(c for c in raw.columns if "Physical Time" in c)
+    out = pd.DataFrame({"Time": raw[time_col]})
+    for c in raw.columns:
+        if "Physical Time" in c:
+            continue
+        m = NEW_FORMAT_COL_RE.search(c)
+        if not m:
+            print(f"  [!] could not parse a zone number out of column: {c}")
+            continue
+        zone, label = int(m.group(1)), m.group(2).strip("_").lower()
+        out[f"z{zone:02d}_{label}"] = raw[c]
+    return out
+
+
+def region_list_legacy(sim: pd.DataFrame) -> list[tuple[str, list[int], str | None]]:
+    """(display label, real-test zones to average, resolved sim column)
+    for the 16-region legacy format, resolved via REGION_MAP's fragment
+    matching against this specific file's actual column names."""
+    result = []
+    for label, zones, sim_col_key in REGION_MAP:
+        sim_col = next((c for c in sim.columns if sim_col_key in c), None)
+        result.append((label, zones, sim_col))
+    return result
+
+
+def region_list_25zone(sim: pd.DataFrame) -> list[tuple[str, list[int], str | None]]:
+    """Same shape as region_list_legacy, but 1:1 -- one real-test zone per
+    CFD sensor, no averaging, derived directly from load_sim_25zone's own
+    column names rather than a hand-maintained map."""
+    result = []
+    for c in sim.columns:
+        if c == "Time":
+            continue
+        zone_str, _, label = c.partition("_")
+        zone = int(zone_str[1:])
+        result.append((f"{zone:02d} {label.replace('_', ' ').title()}", [zone], c))
+    result.sort(key=lambda r: r[1][0])
+    return result
 
 
 def region_series(dummy: pd.DataFrame, zones: list[int], value_kind: str) -> pd.Series:
@@ -161,28 +234,33 @@ def compare_case(data_root: str, case: str, real_case: str, value_kind: str) -> 
         print(f"[{case}] no sim result file yet, skipping.")
         return None
 
+    sim_format = detect_sim_format(sim_path)
     print(f"[{case}] dummy: {dummy_path}" + (f"  (real-case override: {real_case})" if real_case != case else ""))
-    print(f"[{case}] sim:   {sim_path}")
+    print(f"[{case}] sim:   {sim_path}  (format: {sim_format})")
 
     dummy = load_dummy(dummy_path, value_kind)
-    sim = load_sim(sim_path)
+    if sim_format == "25zone":
+        sim = load_sim_25zone(sim_path)
+        region_list = region_list_25zone(sim)
+    else:
+        sim = load_sim_legacy(sim_path)
+        region_list = region_list_legacy(sim)
 
     tag = case if real_case == case else f"{case}_vs_real-{real_case}"
     out_dir = os.path.join(data_root, "comparison_results", tag)
     os.makedirs(out_dir, exist_ok=True)
 
     target_t = dummy["elapsed_s"].to_numpy()
-    n = len(REGION_MAP)
+    n = len(region_list)
     ncols = 4
     nrows = int(np.ceil(n / ncols))
     fig_all, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 3.2 * nrows), sharex=True)
     axes = axes.flatten()
 
     rows = []
-    for i, (label, zones, sim_col_key) in enumerate(REGION_MAP):
-        sim_col = next((c for c in sim.columns if sim_col_key in c), None)
+    for i, (label, zones, sim_col) in enumerate(region_list):
         if sim_col is None:
-            print(f"  [!] sim column not found: {sim_col_key}")
+            print(f"  [!] sim column not found for region: {label}")
             continue
 
         test_series = region_series(dummy, zones, value_kind)
@@ -228,7 +306,7 @@ def compare_case(data_root: str, case: str, real_case: str, value_kind: str) -> 
         ax_grid.set_ylabel("Temp [degC]", fontsize=8)
         ax_grid.grid(alpha=0.3)
 
-    for j in range(len(REGION_MAP), len(axes)):
+    for j in range(len(region_list), len(axes)):
         axes[j].axis("off")
 
     handles, labels = axes[0].get_legend_handles_labels()

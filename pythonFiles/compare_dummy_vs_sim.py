@@ -138,7 +138,19 @@ def load_dummy(path: str, value_kind: str) -> pd.DataFrame:
     valid_mask = df[cols].notna().all(axis=1)
     if not valid_mask.any():
         raise ValueError(f"{path}: no row has all {value_kind} channels valid")
-    t0_idx = valid_mask.idxmax()
+    first_valid_idx = valid_mask.idxmax()
+
+    # t0 = the coldest point from first_valid_idx onward, not just the first
+    # valid row. For a monotonic-heating test this is the same thing --
+    # except some real test files (confirmed 2026-08-14 on min0) log an
+    # extra cold-soak/stabilization period BEFORE the actual HVAC-on test
+    # starts, during which all channels already read valid but the mean
+    # temperature is still drifting down. Using the coldest point instead
+    # of the first valid row skips straight to where the real heating
+    # transient begins (min0: ~855s in, vs. min7/pls7 where it's ~17-18s in
+    # anyway, so this is a no-op change for well-behaved files).
+    mean_val = df.loc[first_valid_idx:, cols].mean(axis=1)
+    t0_idx = mean_val.idxmin()
     t0 = df.loc[t0_idx, "Timestamp"]
 
     df = df.loc[t0_idx:].reset_index(drop=True)

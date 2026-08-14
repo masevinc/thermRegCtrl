@@ -92,7 +92,14 @@ def load_dummy(path: str) -> pd.DataFrame:
     valid_mask = df[equ_cols].notna().all(axis=1)
     if not valid_mask.any():
         raise ValueError(f"{path}: no row has all {VALUE_KIND} channels valid")
-    t0_idx = valid_mask.idxmax()
+    first_valid_idx = valid_mask.idxmax()
+
+    # t0 = coldest point from first_valid_idx onward, not just the first
+    # valid row -- some real test files log an extra cold-soak period
+    # before the actual HVAC-on test starts (confirmed 2026-08-14 on min0,
+    # see compare_dummy_vs_sim.py's load_dummy for the full writeup).
+    mean_val = df.loc[first_valid_idx:, equ_cols].mean(axis=1)
+    t0_idx = mean_val.idxmin()
     t0 = df.loc[t0_idx, "Timestamp"]
 
     df = df.loc[t0_idx:].reset_index(drop=True)

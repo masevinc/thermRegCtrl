@@ -35,19 +35,20 @@ from compare_dummy_vs_sim import (
     load_dummy,
     load_sim_25zone,
     load_sim_legacy,
+    region_list_25zone,
     region_series,
     resample_sim,
     sim_25zone_to_legacy_regions,
 )
 
-# Every case is plotted on REGION_MAP's 16 regions. Legacy-format cases
-# (see compare_dummy_vs_sim.py) already have exactly that shape. 25-zone
-# cases get collapsed down to the same 16 regions via
-# sim_25zone_to_legacy_regions -- re-introduces the averaging the 25-zone
-# format was added to avoid, but is the only way to put a 25-zone case on
-# the same grid as the older ones for a direct overlay/ranking. Use
-# compare_dummy_vs_sim.py directly instead if you want the full-resolution
-# 25-zone-native comparison for a single case.
+# Grid resolution is decided per run, not fixed: if every --cases entry is
+# in the newer 25-zone format (see compare_dummy_vs_sim.py), the overlay
+# is plotted natively on all 25 real-test zones (region_list_25zone) --
+# no reason to throw away resolution when nothing needs collapsing. As
+# soon as ANY case in the list is the older legacy 16-sensor format, the
+# whole overlay falls back to REGION_MAP's 16 grouped regions (the only
+# resolution every case can be expressed in), including collapsing any
+# 25-zone cases in the mix via sim_25zone_to_legacy_regions.
 
 # Default sensitivity-study cases for the -7C ambient scenario (min7), one
 # per CFD method/mesh variant -- see thermRegCtrl memory notes for what each
@@ -101,34 +102,47 @@ def main():
     dummy = load_dummy(dummy_path, args.value_kind)
     target_t = dummy["elapsed_s"].to_numpy()
 
-    sims: dict[str, pd.DataFrame] = {}
+    sims_raw: dict[str, pd.DataFrame] = {}
+    formats: dict[str, str] = {}
     for case in cases:
         sim_path = find_sim_file(args.data_root, case)
         if sim_path is None:
             print(f"[!] no sim result found for case '{case}', skipping it")
             continue
         fmt = detect_sim_format(sim_path)
-        sims[case] = (
-            sim_25zone_to_legacy_regions(load_sim_25zone(sim_path))
-            if fmt == "25zone"
-            else load_sim_legacy(sim_path)
-        )
+        sims_raw[case] = load_sim_25zone(sim_path) if fmt == "25zone" else load_sim_legacy(sim_path)
+        formats[case] = fmt
         print(f"[{case}] sim: {sim_path} (format: {fmt})")
-    if not sims:
+    if not sims_raw:
         raise FileNotFoundError("No sim result files found for any of the requested cases")
+
+    all_25zone = all(fmt == "25zone" for fmt in formats.values())
+    if all_25zone:
+        sims = sims_raw
+        region_list = region_list_25zone(next(iter(sims.values())))
+        print(f"All {len(sims)} cases are 25-zone format -- plotting natively on all {len(region_list)} real-test zones.")
+    else:
+        sims = {
+            case: (sim_25zone_to_legacy_regions(sim) if formats[case] == "25zone" else sim)
+            for case, sim in sims_raw.items()
+        }
+        region_list = [(label, zones, sim_col_key) for label, zones, sim_col_key in REGION_MAP]
+        if any(fmt == "25zone" for fmt in formats.values()):
+            print("Mixed legacy/25-zone cases -- collapsing 25-zone case(s) down to REGION_MAP's 16 regions "
+                  "so every case shares one grid.")
 
     out_name = f"methods_vs_{args.real_case}" + (f"_{args.tag}" if args.tag else "")
     out_dir = os.path.join(args.data_root, "comparison_results", out_name)
     os.makedirs(out_dir, exist_ok=True)
 
-    n = len(REGION_MAP)
+    n = len(region_list)
     ncols = 4
     nrows = int(np.ceil(n / ncols))
     fig_all, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.5 * nrows), sharex=True)
     axes = axes.flatten()
 
     metric_rows = []
-    for i, (label, zones, sim_col_key) in enumerate(REGION_MAP):
+    for i, (label, zones, sim_col_key) in enumerate(region_list):
         test_series = region_series(dummy, zones, args.value_kind)
 
         fig, ax = plt.subplots(figsize=(9, 5))
@@ -172,7 +186,7 @@ def main():
         ax_grid.set_ylabel("Temp [degC]", fontsize=8)
         ax_grid.grid(alpha=0.3)
 
-    for j in range(len(REGION_MAP), len(axes)):
+    for j in range(len(region_list), len(axes)):
         axes[j].axis("off")
     handles, labels = axes[0].get_legend_handles_labels()
     fig_all.legend(handles, labels, loc="upper right", fontsize=8)
@@ -197,7 +211,7 @@ def main():
     ranking.to_csv(os.path.join(out_dir, "method_ranking_overall.csv"))
 
     print()
-    print("Overall method ranking (best match to real test first, by mean RMSE across all 16 regions):")
+    print(f"Overall method ranking (best match to real test first, by mean RMSE across all {len(region_list)} regions):")
     print(ranking.to_string())
     print(f"\nPlots and metrics written to -> {out_dir}")
 

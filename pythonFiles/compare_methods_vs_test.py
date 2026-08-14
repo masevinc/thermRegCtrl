@@ -79,6 +79,10 @@ def main():
                          help="Comma-separated CFD case names to overlay (each must have its own "
                               "sim-results/<case>/ folder)")
     parser.add_argument("--real-case", default="min7", help="Real dummy_measurements case to compare all methods against")
+    parser.add_argument("--tag", default=None,
+                         help="Output subfolder suffix: comparison_results/methods_vs_<real-case>[_<tag>]/. "
+                              "Use this whenever --cases is a custom subset, so it doesn't overwrite the "
+                              "full-sensitivity-study run's output for the same --real-case.")
     parser.add_argument("--value-kind", default="AIR", choices=["AIR", "EQU"])
     parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
     args = parser.parse_args()
@@ -107,7 +111,8 @@ def main():
     if not sims:
         raise FileNotFoundError("No sim result files found for any of the requested cases")
 
-    out_dir = os.path.join(args.data_root, "comparison_results", f"methods_vs_{args.real_case}")
+    out_name = f"methods_vs_{args.real_case}" + (f"_{args.tag}" if args.tag else "")
+    out_dir = os.path.join(args.data_root, "comparison_results", out_name)
     os.makedirs(out_dir, exist_ok=True)
 
     n = len(REGION_MAP)

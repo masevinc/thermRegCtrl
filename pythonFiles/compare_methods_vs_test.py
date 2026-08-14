@@ -27,6 +27,7 @@ import pandas as pd
 
 from compare_dummy_vs_sim import (
     DEFAULT_DATA_ROOT,
+    DEFAULT_SMOOTH_WINDOW_S,
     REGION_MAP,
     detect_sim_format,
     find_dummy_file,
@@ -85,7 +86,12 @@ def main():
                               "full-sensitivity-study run's output for the same --real-case.")
     parser.add_argument("--value-kind", default="AIR", choices=["AIR", "EQU"])
     parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
+    parser.add_argument("--smooth-window", type=float, default=DEFAULT_SMOOTH_WINDOW_S,
+                         help="Savitzky-Golay smoothing window for PLOTTED sim curves only, in seconds "
+                              f"(default {DEFAULT_SMOOTH_WINDOW_S}s). Error metrics/ranking always use raw data.")
+    parser.add_argument("--no-smooth", action="store_true", help="Plot raw (unsmoothed) sim curves.")
     args = parser.parse_args()
+    smooth_window_s = None if args.no_smooth else args.smooth_window
 
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]
 
@@ -134,7 +140,7 @@ def main():
             sim_col = next((c for c in sim.columns if sim_col_key in c), None)
             if sim_col is None:
                 continue
-            sim_series = resample_sim(sim, sim_col, target_t)
+            sim_series = resample_sim(sim, sim_col, target_t)  # RAW -- metrics always use this
             color = METHOD_COLORS[j % len(METHOD_COLORS)]
 
             err = sim_series - test_series.to_numpy()
@@ -148,8 +154,9 @@ def main():
                 "max_abs_error_degC": np.nanmax(np.abs(err)) if valid.any() else np.nan,
             })
 
-            ax.plot(target_t, sim_series, label=case, color=color, alpha=0.85, linewidth=1.2)
-            ax_grid.plot(target_t, sim_series, color=color, alpha=0.85, linewidth=0.9)
+            sim_plot = sim_series if smooth_window_s is None else resample_sim(sim, sim_col, target_t, smooth_window_s)
+            ax.plot(target_t, sim_plot, label=case, color=color, alpha=0.85, linewidth=1.2)
+            ax_grid.plot(target_t, sim_plot, color=color, alpha=0.85, linewidth=0.9)
 
         ax.set_title(f"{label}: real test vs. {len(sims)} CFD methods")
         ax.set_xlabel("Elapsed time since test start [s]")
@@ -169,8 +176,9 @@ def main():
         axes[j].axis("off")
     handles, labels = axes[0].get_legend_handles_labels()
     fig_all.legend(handles, labels, loc="upper right", fontsize=8)
+    smooth_note = f" (sim smoothed, Savitzky-Golay {int(smooth_window_s)}s -- metrics use raw data)" if smooth_window_s else ""
     fig_all.suptitle(
-        f"Real test ({args.real_case}, {args.value_kind}) vs. {len(sims)} CFD methods, all regions\n"
+        f"Real test ({args.real_case}, {args.value_kind}) vs. {len(sims)} CFD methods, all regions{smooth_note}\n"
         "X axis: elapsed time since test start [s]  |  Y axis: temperature [degC]"
     )
     fig_all.tight_layout(rect=(0, 0, 1, 0.94))

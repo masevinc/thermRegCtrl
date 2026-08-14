@@ -58,9 +58,24 @@ For CFD-only variants with no test rig run of their own (e.g. a
 mesh-sensitivity case like coarse_min7), pass --real-case to compare
 against a different case's real dummy_measurements data.
 
+Presentation smoothing (added 2026-08-14): the CFD curves are visibly
+noisy (transient RANS numerical oscillation, not real physical signal).
+By default, PLOTTED sim curves are smoothed with a Savitzky-Golay filter
+(see smooth_sim_series, DEFAULT_SMOOTH_WINDOW_S=250s -- chosen by
+comparing windows from 30s to 600s on kwsst_min7's Thorax trace: shorter
+windows still look jagged, beyond ~500s the fit visibly distorts the
+curve's start/end via edge effects). This is presentation-only --
+error_summary_*.csv's bias/MAE/RMSE/max-error are always computed from
+the RAW (unsmoothed) resampled data, never the smoothed plotting curve,
+so smoothing cannot make the reported accuracy look better than it is.
+Every smoothed plot's legend/title says so explicitly. Disable with
+--no-smooth or change the window with --smooth-window <seconds>.
+
 Usage:
     python3 compare_dummy_vs_sim.py --case min7
     python3 compare_dummy_vs_sim.py --case coarse_min7 --real-case min7
+    python3 compare_dummy_vs_sim.py --case min7 --smooth-window 400
+    python3 compare_dummy_vs_sim.py --case min7 --no-smooth
 """
 
 from __future__ import annotations
@@ -73,6 +88,9 @@ import re
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.signal import savgol_filter
+
+DEFAULT_SMOOTH_WINDOW_S = 250.0  # Savitzky-Golay window, seconds -- see smooth_sim_series
 
 INVALID_THRESHOLD = -900.0  # dummy sensors report -1000 when invalid/disconnected
 
@@ -247,15 +265,36 @@ def region_series(dummy: pd.DataFrame, zones: list[int], value_kind: str) -> pd.
     return dummy[cols].mean(axis=1)
 
 
-def resample_sim(sim: pd.DataFrame, sim_col: str, target_t: np.ndarray) -> np.ndarray:
+def smooth_sim_series(sim_t: np.ndarray, sim_v: np.ndarray, window_s: float, polyorder: int = 3) -> np.ndarray:
+    """Savitzky-Golay smoothing for presentation plots -- see module
+    docstring for why/how the default window was picked, and the
+    scientific-integrity note (never used for the error metrics, raw-data
+    only there). window_s is converted to an odd sample count using this
+    series' own native sample spacing (native dt varies: ~0.1-0.5s
+    depending on case/format), so the same window_s means the same
+    physical smoothing duration regardless of a file's sampling rate."""
+    dt = np.median(np.diff(sim_t))
+    window = int(round(window_s / dt))
+    if window % 2 == 0:
+        window += 1
+    window = max(window, polyorder + 2 if (polyorder + 2) % 2 else polyorder + 3)
+    if window >= len(sim_v):
+        return sim_v  # too little data to smooth meaningfully, return as-is
+    return savgol_filter(sim_v, window_length=window, polyorder=polyorder)
+
+
+def resample_sim(sim: pd.DataFrame, sim_col: str, target_t: np.ndarray, smooth_window_s: float | None = None) -> np.ndarray:
     sim_t = sim["Time"].to_numpy()
     sim_v = sim[sim_col].to_numpy()
+    if smooth_window_s is not None:
+        sim_v = smooth_sim_series(sim_t, sim_v, smooth_window_s)
     out = np.interp(target_t, sim_t, sim_v)
     out[(target_t < sim_t.min()) | (target_t > sim_t.max())] = np.nan
     return out
 
 
-def compare_case(data_root: str, case: str, real_case: str, value_kind: str) -> pd.DataFrame | None:
+def compare_case(data_root: str, case: str, real_case: str, value_kind: str,
+                  smooth_window_s: float | None = DEFAULT_SMOOTH_WINDOW_S) -> pd.DataFrame | None:
     dummy_path = find_dummy_file(data_root, real_case)
     sim_path = find_sim_file(data_root, case)
 
@@ -296,7 +335,7 @@ def compare_case(data_root: str, case: str, real_case: str, value_kind: str) -> 
             continue
 
         test_series = region_series(dummy, zones, value_kind)
-        sim_series = resample_sim(sim, sim_col, target_t)
+        sim_series = resample_sim(sim, sim_col, target_t)  # RAW -- metrics always use this, never the smoothed plot curve
 
         err = sim_series - test_series.to_numpy()
         valid = ~np.isnan(err)
@@ -316,10 +355,13 @@ def compare_case(data_root: str, case: str, real_case: str, value_kind: str) -> 
             "n_compared_seconds": int(valid.sum()),
         })
 
+        sim_plot = sim_series if smooth_window_s is None else resample_sim(sim, sim_col, target_t, smooth_window_s)
+        sim_label = f"CFD sim ({sim_col})" + (f", Savitzky-Golay {int(smooth_window_s)}s" if smooth_window_s else "")
+
         # individual per-region plot
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.plot(target_t, test_series, label=f"Test measurement ({value_kind}, zones {zones})", color="tab:blue")
-        ax.plot(target_t, sim_series, label=f"CFD sim ({sim_col})", color="tab:red")
+        ax.plot(target_t, sim_plot, label=sim_label, color="tab:red")
         ax.set_title(f"Case {tag} - {label}: test vs. CFD simulation")
         ax.set_xlabel("Elapsed time since test start [s]")
         ax.set_ylabel("Temperature [degC]")
@@ -332,7 +374,7 @@ def compare_case(data_root: str, case: str, real_case: str, value_kind: str) -> 
         # subplot in the combined overview figure
         ax_grid = axes[i]
         ax_grid.plot(target_t, test_series, label="Test", color="tab:blue", linewidth=1)
-        ax_grid.plot(target_t, sim_series, label="Sim", color="tab:red", linewidth=1)
+        ax_grid.plot(target_t, sim_plot, label="Sim", color="tab:red", linewidth=1)
         ax_grid.set_title(label, fontsize=9)
         ax_grid.set_xlabel("Time [s]", fontsize=8)
         ax_grid.set_ylabel("Temp [degC]", fontsize=8)
@@ -343,8 +385,9 @@ def compare_case(data_root: str, case: str, real_case: str, value_kind: str) -> 
 
     handles, labels = axes[0].get_legend_handles_labels()
     fig_all.legend(handles, labels, loc="upper right")
+    smooth_note = f" (sim smoothed, Savitzky-Golay {int(smooth_window_s)}s -- metrics use raw data)" if smooth_window_s else ""
     fig_all.suptitle(
-        f"Case {tag}: test measurement ({value_kind}) vs. CFD simulation, all regions\n"
+        f"Case {tag}: test measurement ({value_kind}) vs. CFD simulation, all regions{smooth_note}\n"
         "X axis: elapsed time since test start [s]  |  Y axis: temperature [degC]"
     )
     fig_all.tight_layout(rect=(0, 0, 1, 0.94))
@@ -372,9 +415,15 @@ def main():
                               "EQU = equivalent/heated-probe temperature, a different physical quantity, see "
                               "equ_comfort_from_test.py's docstring)")
     parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
+    parser.add_argument("--smooth-window", type=float, default=DEFAULT_SMOOTH_WINDOW_S,
+                         help=f"Savitzky-Golay smoothing window for PLOTTED sim curves only, in seconds "
+                              f"(default {DEFAULT_SMOOTH_WINDOW_S}s). Error metrics always use raw data "
+                              "regardless of this setting.")
+    parser.add_argument("--no-smooth", action="store_true", help="Plot raw (unsmoothed) sim curves.")
     args = parser.parse_args()
 
-    compare_case(args.data_root, args.case, args.real_case or args.case, args.value_kind)
+    compare_case(args.data_root, args.case, args.real_case or args.case, args.value_kind,
+                 smooth_window_s=None if args.no_smooth else args.smooth_window)
 
 
 if __name__ == "__main__":

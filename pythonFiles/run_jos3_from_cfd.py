@@ -13,11 +13,23 @@ run's own sensor data and against physical thermal-manikin measurements
 (see compare_dummy_vs_sim.py in the master's thesis data folder), to see
 how JOS-3's physiological model responds to that scenario.
 
-Input file format: sim-results/<case>/*<case>*.csv, with 16 monitor columns
-named like "Temperatur - Sensor_01_HEAD_top Monitor: ... (C)" -- i.e. the
-same CFD sensor export used by compare_dummy_vs_sim.py. Not included in this
-repo (kept out of version control, see README below); point --data-root at
-wherever that data lives locally.
+Input file format: sim-results/<case>/*<case>*.csv, auto-detected the same
+way as compare_dummy_vs_sim.py (see detect_sim_format there, imported not
+duplicated):
+  - "legacy16": 16 monitor columns named like "Temperatur - Sensor_01_
+    HEAD_top Monitor: ... (C)", one shared Time column. Uses SEGMENT_MAP
+    (fragment matching, several JOS-3 segments proxied from the nearest
+    available sensor -- see Assumptions below).
+  - "25zone": 25 sensors matching the real test rig's own 1..25 zone
+    numbering 1:1 (added 2026-08-12), each with its own "Physical Time
+    (s)" column. Uses SEGMENT_MAP_25ZONE (real zone numbers, not sensor
+    columns), which -- unlike the legacy map -- has genuine per-side
+    forearm data (zones 12/13) instead of proxying LArm/RArm from the
+    shoulder/upper-arm sensor. See SEGMENT_MAP_25ZONE's own comment for
+    the full zone->segment reasoning (based on the test rig's own
+    "Sensor position" zone diagram, shared 2026-08-17).
+Not included in this repo (kept out of version control, see README below);
+point --data-root at wherever that data lives locally.
 
 Optional velocity input: sim-results/<case>/*velocity*<case>*.csv, long
 format with columns time_min, sensor_id, sensor_label, velocity_ms (16
@@ -75,6 +87,8 @@ import numpy as np
 import pandas as pd
 import jos3
 
+from compare_dummy_vs_sim import detect_sim_format, load_sim_25zone
+
 DEFAULT_DATA_ROOT = os.path.expanduser("~/Documents/master_thesis_input_data")
 
 AMBIENT_RH = 50.0   # %, constant assumption -- no RH sensor in this CFD export
@@ -106,6 +120,46 @@ SEGMENT_MAP: dict[str, str | list[str]] = {
     "RFoot":     "Sensor_16_LOWERBODY_rightFoot",
 }
 SECTIONS_JOS3 = list(SEGMENT_MAP.keys())  # must match jos3.matrix.BODY_NAMES order
+
+# JOS-3 segment <- real test rig zone number(s) 1..25 (see the "Sensor
+# position" zone diagram Alperen shared 2026-08-17: 1 scalp, 2 face,
+# 3 left temple, 4 right temple, 5 neck, 6 thorax middle, 7 thorax left,
+# 8 thorax right, 9 stomach, 10 upper arm left, 11 upper arm right,
+# 12 lower arm left, 13 lower arm right, 14 left hand, 15 right hand,
+# 16 left thigh, 17 right thigh, 18 left thigh side, 19 right thigh side,
+# 20 left shin, 21 right shin, 22 left shin side, 23 right shin side,
+# 24 left foot, 25 right foot).
+#
+# Deliberately NOT the same grouping as the test rig's own 25->16
+# "individual setting" table (which merges lower-arm+hand into one
+# "hand" reading, e.g. zones 12+14 -> "Left hand") -- JOS-3 has separate
+# LArm (forearm) and LHand segments, so this map keeps them separate and
+# gets a real forearm reading for the first time (zones 12/13), instead
+# of the legacy map's proxy (forearm <- shoulder/upper-arm sensor).
+# Head averages all 4 head zones (scalp/face/temples) rather than just
+# scalp, for a more representative single value now that the resolution
+# is there. Chest/Back and Pelvis are still proxies -- the zone diagram
+# has no back-facing or pelvis/abdomen sensor at all, same limitation as
+# the legacy map, not something this format upgrade can fix.
+SEGMENT_MAP_25ZONE: dict[str, list[int]] = {
+    "Head":      [1, 2, 3, 4],
+    "Neck":      [5],
+    "Chest":     [6, 7, 8, 9],
+    "Back":      [6, 7, 8, 9],   # proxy: no back-facing sensor in this layout
+    "Pelvis":    [16, 17, 18, 19],  # proxy: avg of thighs
+    "LShoulder": [10],
+    "LArm":      [12],           # real forearm data, unlike SEGMENT_MAP's proxy
+    "LHand":     [14],
+    "RShoulder": [11],
+    "RArm":      [13],           # real forearm data, unlike SEGMENT_MAP's proxy
+    "RHand":     [15],
+    "LThigh":    [16, 18],
+    "LLeg":      [20, 22],
+    "LFoot":     [24],
+    "RThigh":    [17, 19],
+    "RLeg":      [21, 23],
+    "RFoot":     [25],
+}
 
 # JOS-3 segment <- velocity CSV sensor_label fragment(s). Matched by label,
 # not by sensor_id -- see module docstring for why. Mirrors SEGMENT_MAP's
@@ -176,12 +230,25 @@ def _resolve_column(cfd: pd.DataFrame, fragment: str) -> str:
 
 
 def build_segment_temps(cfd: pd.DataFrame) -> pd.DataFrame:
-    """Returns Time + one air-temperature column per JOS-3 segment."""
+    """Returns Time + one air-temperature column per JOS-3 segment (legacy16 format)."""
     out = pd.DataFrame({"Time": cfd["Time"]})
     for segment, fragment in SEGMENT_MAP.items():
         fragments = [fragment] if isinstance(fragment, str) else fragment
         cols = [_resolve_column(cfd, f) for f in fragments]
         out[segment] = cfd[cols].mean(axis=1)
+    return out
+
+
+def build_segment_temps_25zone(sim25: pd.DataFrame) -> pd.DataFrame:
+    """Returns Time + one air-temperature column per JOS-3 segment
+    (25zone format, see SEGMENT_MAP_25ZONE). sim25 is load_sim_25zone's
+    output: Time + columns named 'z<NN>_<label>'."""
+    out = pd.DataFrame({"Time": sim25["Time"]})
+    for segment, target_zones in SEGMENT_MAP_25ZONE.items():
+        cols = [c for c in sim25.columns if any(c.startswith(f"z{z:02d}_") for z in target_zones)]
+        if not cols:
+            raise KeyError(f"No 25zone column found for JOS-3 segment '{segment}' (zones {target_zones})")
+        out[segment] = sim25[cols].mean(axis=1)
     return out
 
 
@@ -263,10 +330,13 @@ def main():
     args = parser.parse_args()
 
     sim_path = find_sim_file(args.data_root, args.case)
-    print(f"[{args.case}] CFD input: {sim_path}")
+    sim_format = detect_sim_format(sim_path)
+    print(f"[{args.case}] CFD input: {sim_path}  (format: {sim_format})")
 
-    cfd = load_cfd(sim_path)
-    segment_temps = build_segment_temps(cfd)
+    if sim_format == "25zone":
+        segment_temps = build_segment_temps_25zone(load_sim_25zone(sim_path))
+    else:
+        segment_temps = build_segment_temps(load_cfd(sim_path))
 
     vel_path = find_velocity_file(args.data_root, args.case)
     segment_velocities = None

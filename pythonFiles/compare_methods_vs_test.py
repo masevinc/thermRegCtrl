@@ -97,18 +97,21 @@ def main():
 
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]
 
-    # NOTE: infers ONE dummy_measurements/ subdir (tilted vs default, see
-    # infer_dummy_subdir) from the FIRST --cases entry, then uses it for
-    # every case in the overlay. Fine when all cases share one vent
-    # config (e.g. the full sensitivity study, all historically
-    # tilted-vent). Questionable when --cases deliberately mixes
-    # vent0deg_* and vent30deg_* (the "ventangle" comparisons) -- those
-    # two are now validated against DIFFERENT real tests (default/ vs
-    # tilted/ have separate no-tilt/tilted measurements), so overlaying
-    # both against a single real-test curve is no longer strictly
-    # apples-to-apples now that per-vent real data exists. Flagged, not
-    # silently fixed -- ask before splitting these into two single-vent
-    # comparisons.
+    # Since dummy_measurements/ split into tilted/ vs default/ (separate
+    # real tests per vent config, 2026-08-17/18), a --cases list must not
+    # silently mix vent0deg_* and vent30deg_* -- each vent config has its
+    # OWN correctly-matching real test now, so one shared overlay would
+    # compare at least one of them against the wrong physical test. Run
+    # this script once per vent config instead (Alperen's call,
+    # 2026-08-18: split rather than auto-merge).
+    subdirs_used = {infer_dummy_subdir(c) for c in cases}
+    if len(subdirs_used) > 1:
+        raise ValueError(
+            f"--cases mixes vent configs with different real tests ({cases}, "
+            f"resolving to dummy_measurements/{subdirs_used}) -- run this script once per "
+            "vent config instead of overlaying them against one (necessarily wrong for "
+            "at least one of them) real-test curve."
+        )
     dummy_path = find_dummy_file(args.data_root, args.real_case, subdir=infer_dummy_subdir(cases[0]))
     if dummy_path is None:
         raise FileNotFoundError(f"No dummy measurement file found for real-case '{args.real_case}'")

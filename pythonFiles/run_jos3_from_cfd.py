@@ -31,20 +31,28 @@ duplicated):
 Not included in this repo (kept out of version control, see README below);
 point --data-root at wherever that data lives locally.
 
-Optional velocity input: sim-results/<case>/*velocity*<case>*.csv, long
-format with columns time_min, sensor_id, sensor_label, velocity_ms (16
-sensors x N timestamps -- doesn't need to be dense; values are linearly
-interpolated onto the temperature time grid and held constant beyond the
-last available timestamp). When present, this replaces the constant-Va
-assumption below with real per-segment, per-timestep air velocity. Sensors
-are matched to JOS-3 segments by sensor_label (anatomical name), NOT by
-sensor_id -- a real case (coarse_min7) turned up sensor_id/sensor_label
-pairs that don't agree with the temperature export's own Sensor_NN
-numbering (e.g. id 07 = "shoulder_right" here but Sensor_07 = SHOULDER_left
-in the temperature file), so id-based matching would silently pair the
-wrong physical points. See VELOCITY_SEGMENT_MAP. When no velocity file is
-found for a case, falls back to the constant AMBIENT_VA below (this is
-still the case for min7/min0/pls7 as of 2026-08-07).
+Optional velocity input: sim-results/<case>/*velocity*<case>*.csv, auto-
+detected the same way as the temperature input (detect_sim_format):
+  - "legacy_sparse" (original format, min7/min0/pls7-era): long format
+    with columns time_min, sensor_id, sensor_label, velocity_ms (16
+    sensors x a handful of timestamps, doesn't need to be dense; values
+    are linearly interpolated onto the temperature time grid and held
+    constant beyond the last available timestamp). Matched to JOS-3
+    segments by sensor_label (anatomical name), NOT sensor_id -- a real
+    case (coarse_min7) turned up sensor_id/sensor_label pairs that
+    disagree with that era's temperature export's own Sensor_NN
+    numbering, so id-based matching would silently pair the wrong
+    physical points. See VELOCITY_SEGMENT_MAP.
+  - "25zone" (added 2026-08-17, e.g. the tilted/vent30deg_<scenario>
+    cases): dense per-second export, SAME structure and SAME zone
+    numbering as the 25zone temperature format (just "V - Sensor_NN_
+    <label> Monitor" instead of "Temperatur - ..."), confirmed to use
+    the identical zone<->label convention as the temperature file for
+    the same case (no id/label mismatch this time) -- so it reuses
+    SEGMENT_MAP_25ZONE directly, no separate velocity map needed.
+When present, either format replaces the constant-Va assumption below
+with real per-segment, per-timestep air velocity. When no velocity file
+is found for a case, falls back to the constant AMBIENT_VA below.
 
 Assumptions (documented here because none of these have a corresponding
 sensor in the CFD export):
@@ -341,8 +349,16 @@ def main():
     vel_path = find_velocity_file(args.data_root, args.case)
     segment_velocities = None
     if vel_path:
-        print(f"[{args.case}] Velocity input: {vel_path} (overrides constant AMBIENT_VA={AMBIENT_VA})")
-        segment_velocities = build_segment_velocities(load_velocity(vel_path))
+        vel_format = detect_sim_format(vel_path)
+        print(f"[{args.case}] Velocity input: {vel_path}  (format: {vel_format}, "
+              f"overrides constant AMBIENT_VA={AMBIENT_VA})")
+        if vel_format == "25zone":
+            # Same shape as build_segment_temps_25zone (Time + one column
+            # per JOS-3 segment) -- reused as-is, the function doesn't
+            # care whether the source quantity is temperature or velocity.
+            segment_velocities = build_segment_temps_25zone(load_sim_25zone(vel_path))
+        else:
+            segment_velocities = build_segment_velocities(load_velocity(vel_path))
     else:
         print(f"[{args.case}] No velocity file found, using constant AMBIENT_VA={AMBIENT_VA} m/s")
 

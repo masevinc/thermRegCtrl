@@ -283,9 +283,18 @@ def build_segment_velocities(vel: pd.DataFrame) -> pd.DataFrame:
 
 
 def run_jos3(segment_temps: pd.DataFrame, segment_velocities: pd.DataFrame | None = None) -> pd.DataFrame:
-    model = jos3.JOS3(height=1.8, weight=75, age=30, ex_output="all")
+    # Anthropometrics/activity matched to the STAR-CCM+ Fiala Manikin used
+    # elsewhere in this thesis (Human Comfort module, screenshot shared
+    # 2026-08-17), so JOS-3's and Fiala's predictions are driven by the
+    # same body -- not two different virtual people. Fiala panel: Activity
+    # Level=1.0 met (already matched, see PAR below), Height=1909.6mm,
+    # Weight=73.4kg, Age=35.0, Gender=Unisex. JOS-3 has no "unisex" sex
+    # option (only "male"/"female", affects BMR/BSA equations) -- kept at
+    # JOS-3's own default "male" since there's no faithful equivalent;
+    # flagged as a known, unresolved mismatch between the two models.
+    model = jos3.JOS3(height=1.9096, weight=73.4, age=35, sex="male", ex_output="all")
     model.posture = "sitting"
-    model.PAR = 1.0  # metabolic activity level [met], seated/resting
+    model.PAR = 1.0  # metabolic activity level [met] -- matches Fiala's Activity Level=1.0
 
     target_t = np.arange(0, segment_temps["Time"].iloc[-1] + COUPLING_DT, COUPLING_DT)
     interp_temps = {

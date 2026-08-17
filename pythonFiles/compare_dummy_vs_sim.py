@@ -123,8 +123,43 @@ REGION_MAP = [
 NEW_FORMAT_COL_RE = re.compile(r"Sensor_(\d+)_([A-Za-z_]+)(?:\s+\d+)?\s+Monitor", re.IGNORECASE)
 
 
-def find_dummy_file(data_root: str, case: str) -> str | None:
-    matches = sorted(glob.glob(os.path.join(data_root, "dummy_measurements", f"*{case}*.csv")))
+def infer_dummy_subdir(case: str) -> str:
+    """dummy_measurements/ was split 2026-08-17/18 into tilted/ (30deg
+    vent) and default/ (0deg/no-tilt vent) subfolders, since the same
+    scenario name (e.g. "min7") now has a real test file under EACH --
+    two physically different vent configs, not interchangeable. This
+    infers which one a case wants from its own name prefix (the --case
+    value, NOT --real-case, since --real-case is often just the bare
+    scenario name like "min7" with no vent info of its own).
+
+    Only an explicit "vent0deg_" prefix resolves to "default" -- every
+    other case name (vent30deg_*, tilted_30deg_v4_*, and every pre-split
+    bare case name: min7, coarse_min7, fine_min7, kwsst_min7,
+    first_order_min7, ... all of DEFAULT_CASES in
+    compare_methods_vs_test.py) defaults to "tilted", since ALL of those
+    were historically validated against the ORIGINAL baseline files,
+    which is exactly what now lives under tilted/. This is deliberately
+    NOT ambiguous/ None-returning -- a flat search across both new
+    subfolders for a case with no vent hint would silently risk matching
+    the wrong (newer, differently-vented) file instead."""
+    if case.startswith("vent0deg_"):
+        return "default"
+    return "tilted"
+
+
+def find_dummy_file(data_root: str, case: str, subdir: str | None = None) -> str | None:
+    """Prefers a "_clean" file (pre-trimmed to elapsed seconds from the
+    real test's own actual start, see load_dummy) over the raw original
+    if both exist. subdir restricts the search to dummy_measurements/
+    <subdir>/ (see infer_dummy_subdir) instead of searching everywhere,
+    which matters now that "min7" etc. exist under both tilted/ and
+    default/ with different physical meaning."""
+    search_root = os.path.join(data_root, "dummy_measurements", subdir) if subdir \
+        else os.path.join(data_root, "dummy_measurements")
+    clean = sorted(glob.glob(os.path.join(search_root, "**", f"*{case}*_clean.csv"), recursive=True))
+    if clean:
+        return clean[0]
+    matches = sorted(glob.glob(os.path.join(search_root, "**", f"*{case}*.csv"), recursive=True))
     return matches[0] if matches else None
 
 
@@ -148,9 +183,22 @@ def find_sim_file(data_root: str, case: str) -> str | None:
 
 def load_dummy(path: str, value_kind: str) -> pd.DataFrame:
     df = pd.read_csv(path)
-    df["Timestamp"] = pd.to_datetime(df["Timestamp"], format="%Y.%m.%d %H:%M:%S")
-
     cols = [c for c in df.columns if c.endswith(f"_{value_kind}")]
+
+    if "Time" in df.columns and "Timestamp" not in df.columns:
+        # Pre-cleaned format (added 2026-08-17/18, "*_clean.csv" files):
+        # already trimmed to the real HVAC-on test start and reindexed to
+        # plain elapsed seconds from t=0 -- someone/something upstream
+        # already did the coldest-point t0-detection this function used
+        # to do by hand (see the legacy branch below), and lines up with
+        # the CFD's own 0-1800s convention directly. Nothing left to do
+        # here except mark the invalid sentinel and rename the column.
+        df[cols] = df[cols].where(df[cols] > INVALID_THRESHOLD, np.nan)
+        return df.rename(columns={"Time": "elapsed_s"})
+
+    # Legacy raw format: "Timestamp" column (%Y.%m.%d %H:%M:%S), needs our
+    # own t0-detection.
+    df["Timestamp"] = pd.to_datetime(df["Timestamp"], format="%Y.%m.%d %H:%M:%S")
     df[cols] = df[cols].where(df[cols] > INVALID_THRESHOLD, np.nan)
 
     valid_mask = df[cols].notna().all(axis=1)
@@ -295,7 +343,7 @@ def resample_sim(sim: pd.DataFrame, sim_col: str, target_t: np.ndarray, smooth_w
 
 def compare_case(data_root: str, case: str, real_case: str, value_kind: str,
                   smooth_window_s: float | None = DEFAULT_SMOOTH_WINDOW_S) -> pd.DataFrame | None:
-    dummy_path = find_dummy_file(data_root, real_case)
+    dummy_path = find_dummy_file(data_root, real_case, subdir=infer_dummy_subdir(case))
     sim_path = find_sim_file(data_root, case)
 
     if dummy_path is None:

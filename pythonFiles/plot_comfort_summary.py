@@ -26,18 +26,22 @@ import os
 import pandas as pd
 
 from comfort_plots import SEGMENT_ORDER, plot_ppd_curve, plot_segment_profile
-from equ_comfort_from_test import find_dummy_file, load_dummy
+from equ_comfort_from_test import VALUE_KIND, find_dummy_file, infer_dummy_subdir, load_dummy
 
 DEFAULT_DATA_ROOT = os.path.expanduser("~/Documents/master_thesis_input_data")
 
 # JOS-3 segment -> dummy test-rig EQU zone(s); same correspondence used
-# throughout this pipeline (run_jos3_from_cfd.py's SEGMENT_MAP /
-# equ_comfort_from_test.py's ISO_REGION_MAP).
+# throughout this pipeline (run_jos3_from_cfd.py's SEGMENT_MAP_25ZONE /
+# equ_comfort_from_test.py's ISO_REGION_MAP). Fixed 2026-08-18: LArm/RArm
+# used to duplicate LShoulder/RShoulder's zones (10/11) and LHand/RHand
+# used to merge forearm+hand (12+14, 13+15) -- see ISO_REGION_MAP's
+# comment in equ_comfort_from_test.py for the full story (zones 12/13
+# are genuinely the forearm, confirmed via the test rig's own diagram).
 JOS3_TO_TEST_ZONES: dict[str, list[int]] = {
     "Head": [1], "Neck": [5], "Chest": [6, 7, 8, 9], "Back": [6, 7, 8, 9],
     "Pelvis": [16, 17, 18, 19],
-    "LShoulder": [10], "LArm": [10], "LHand": [12, 14],
-    "RShoulder": [11], "RArm": [11], "RHand": [13, 15],
+    "LShoulder": [10], "LArm": [12], "LHand": [14],
+    "RShoulder": [11], "RArm": [13], "RHand": [15],
     "LThigh": [16, 18], "LLeg": [20, 22], "LFoot": [24],
     "RThigh": [17, 19], "RLeg": [21, 23], "RFoot": [25],
 }
@@ -79,7 +83,10 @@ def main():
 
     jos3_df = pd.read_csv(jos3_path)
     sensation_df = pd.read_csv(sensation_path)
-    dummy = load_dummy(find_dummy_file(args.data_root, real_case))
+    dummy_path = find_dummy_file(args.data_root, real_case, subdir=infer_dummy_subdir(args.case))
+    if dummy_path is None:
+        raise FileNotFoundError(f"No dummy measurement file found for real-case '{real_case}'")
+    dummy = load_dummy(dummy_path, VALUE_KIND)
 
     out_dir = os.path.join(case_dir, "summary_plots")
     os.makedirs(out_dir, exist_ok=True)

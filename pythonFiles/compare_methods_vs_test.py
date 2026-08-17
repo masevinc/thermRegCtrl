@@ -32,6 +32,7 @@ from compare_dummy_vs_sim import (
     detect_sim_format,
     find_dummy_file,
     find_sim_file,
+    infer_dummy_subdir,
     load_dummy,
     load_sim_25zone,
     load_sim_legacy,
@@ -96,7 +97,19 @@ def main():
 
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]
 
-    dummy_path = find_dummy_file(args.data_root, args.real_case)
+    # NOTE: infers ONE dummy_measurements/ subdir (tilted vs default, see
+    # infer_dummy_subdir) from the FIRST --cases entry, then uses it for
+    # every case in the overlay. Fine when all cases share one vent
+    # config (e.g. the full sensitivity study, all historically
+    # tilted-vent). Questionable when --cases deliberately mixes
+    # vent0deg_* and vent30deg_* (the "ventangle" comparisons) -- those
+    # two are now validated against DIFFERENT real tests (default/ vs
+    # tilted/ have separate no-tilt/tilted measurements), so overlaying
+    # both against a single real-test curve is no longer strictly
+    # apples-to-apples now that per-vent real data exists. Flagged, not
+    # silently fixed -- ask before splitting these into two single-vent
+    # comparisons.
+    dummy_path = find_dummy_file(args.data_root, args.real_case, subdir=infer_dummy_subdir(cases[0]))
     if dummy_path is None:
         raise FileNotFoundError(f"No dummy measurement file found for real-case '{args.real_case}'")
     dummy = load_dummy(dummy_path, args.value_kind)

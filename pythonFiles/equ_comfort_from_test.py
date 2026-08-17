@@ -30,42 +30,43 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import glob
 import os
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from compare_dummy_vs_sim import find_dummy_file, infer_dummy_subdir, load_dummy
 from iso14505_bands import BANDS_BY_SEASON, classify, zone_to_sensation_scale
 
 DEFAULT_DATA_ROOT = os.path.expanduser("~/Documents/master_thesis_input_data")
-INVALID_THRESHOLD = -900.0
 VALUE_KIND = "EQU"
 
 # Test-rig zone(s) -> ISO 14505-2 body region. Multiple test zones average
 # into one ISO region where the test rig has finer resolution than the
 # standard's chart (e.g. left/right are the same ISO region; temples have
 # no ISO row of their own and are treated as "face").
+#
+# Zone numbering confirmed 2026-08-17 via the test rig's own "Sensor
+# position" diagram (10/11 upper arm L/R, 12/13 LOWER arm/forearm L/R,
+# 14/15 hand L/R). Fixed 2026-08-18: lowerArm used to duplicate upperArm's
+# zones (10, 11) and hand used to merge forearm+hand (12, 13, 14, 15) --
+# leftover from when this was assumed to have no dedicated forearm sensor
+# (true for the old 16-sensor CFD export, never true for the real test
+# rig's own 25 zones). Same fix applied to plot_comfort_summary.py's
+# JOS3_TO_TEST_ZONES, which had the identical bug.
 ISO_REGION_MAP: dict[str, list[int]] = {
     "scalp":     [1],
     "face":      [2, 3, 4],          # face + left/right temple
     "chest":     [5, 6, 7, 8, 9],    # neck (no ISO row of its own) + thorax
     "upperArm":  [10, 11],
-    "lowerArm":  [10, 11],           # no dedicated forearm sensor, reuse upper arm
-    "hand":      [12, 13, 14, 15],
+    "lowerArm":  [12, 13],
+    "hand":      [14, 15],
     "thigh":     [16, 17, 18, 19],
     "calf":      [20, 21, 22, 23],
     "foot":      [24, 25],
 }
 ALL_ZONES = list(range(1, 26))
-
-
-def find_dummy_file(data_root: str, case: str) -> str:
-    matches = sorted(glob.glob(os.path.join(data_root, "dummy_measurements", f"*{case}*.csv")))
-    if not matches:
-        raise FileNotFoundError(f"No dummy measurement file found for case '{case}'")
-    return matches[0]
 
 
 def find_jos3_comfort_files(data_root: str, case: str) -> tuple[str, str]:
@@ -80,31 +81,6 @@ def find_jos3_comfort_files(data_root: str, case: str) -> tuple[str, str]:
                 f"'jos3_comfort_from_cfd.py --case {case}' first."
             )
     return sensation_path, comfort_path
-
-
-def load_dummy(path: str) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    df["Timestamp"] = pd.to_datetime(df["Timestamp"], format="%Y.%m.%d %H:%M:%S")
-
-    equ_cols = [f"Sensor_{z}_{VALUE_KIND}" for z in ALL_ZONES]
-    df[equ_cols] = df[equ_cols].where(df[equ_cols] > INVALID_THRESHOLD, np.nan)
-
-    valid_mask = df[equ_cols].notna().all(axis=1)
-    if not valid_mask.any():
-        raise ValueError(f"{path}: no row has all {VALUE_KIND} channels valid")
-    first_valid_idx = valid_mask.idxmax()
-
-    # t0 = coldest point from first_valid_idx onward, not just the first
-    # valid row -- some real test files log an extra cold-soak period
-    # before the actual HVAC-on test starts (confirmed 2026-08-14 on min0,
-    # see compare_dummy_vs_sim.py's load_dummy for the full writeup).
-    mean_val = df.loc[first_valid_idx:, equ_cols].mean(axis=1)
-    t0_idx = mean_val.idxmin()
-    t0 = df.loc[t0_idx, "Timestamp"]
-
-    df = df.loc[t0_idx:].reset_index(drop=True)
-    df["elapsed_s"] = (df["Timestamp"] - t0).dt.total_seconds()
-    return df
 
 
 def classify_regions(dummy: pd.DataFrame, season: str) -> pd.DataFrame:
@@ -144,14 +120,16 @@ def main():
     args = parser.parse_args()
     real_case = args.real_case or args.case
 
-    dummy_path = find_dummy_file(args.data_root, real_case)
+    dummy_path = find_dummy_file(args.data_root, real_case, subdir=infer_dummy_subdir(args.case))
+    if dummy_path is None:
+        raise FileNotFoundError(f"No dummy measurement file found for real-case '{real_case}'")
     sensation_path, comfort_path = find_jos3_comfort_files(args.data_root, args.case)
     print(f"[{args.case}] dummy EQU:      {dummy_path}"
           + (f"  (real-case override: {real_case})" if real_case != args.case else ""))
     print(f"[{args.case}] JOS-3 sensation: {sensation_path}")
     print(f"[{args.case}] JOS-3 comfort:   {comfort_path}")
 
-    dummy = load_dummy(dummy_path)
+    dummy = load_dummy(dummy_path, VALUE_KIND)
     zones = classify_regions(dummy, args.season)
 
     jos3_sensation = pd.read_csv(sensation_path)

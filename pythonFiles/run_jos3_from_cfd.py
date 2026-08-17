@@ -296,6 +296,14 @@ def run_jos3(segment_temps: pd.DataFrame, segment_velocities: pd.DataFrame | Non
     model.posture = "sitting"
     model.PAR = 1.0  # metabolic activity level [met] -- matches Fiala's Activity Level=1.0
 
+    # Initial body temperature: JOS-3's own default is a uniform 36.0C
+    # across all 85 nodes (skin+core alike, see jos3.py's __init__). The
+    # Fiala Manikin's own Initial Conditions use a uniform 36.5C (Static
+    # Temperature node, confirmed 2026-08-17) -- overridden here so both
+    # models start the transient from the same reference body state.
+    FIALA_INITIAL_BODYTEMP_C = 36.5
+    model.bodytemp = np.full(model.bodytemp.shape, FIALA_INITIAL_BODYTEMP_C)
+
     target_t = np.arange(0, segment_temps["Time"].iloc[-1] + COUPLING_DT, COUPLING_DT)
     interp_temps = {
         seg: np.interp(target_t, segment_temps["Time"], segment_temps[seg])
